@@ -28,9 +28,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy --verbose
-        env:
-          WRANGLER_LOG: debug
+          command: deploy
 
       - name: Upload error logs on failure
         if: failure()
