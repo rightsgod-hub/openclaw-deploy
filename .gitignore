@@ -31,6 +31,9 @@ Thumbs.db
 .env.*
 !.env.example
 
+# Local work files (not to be pushed)
+_local/
+
 # TypeScript
 *.tsbuildinfo
 
