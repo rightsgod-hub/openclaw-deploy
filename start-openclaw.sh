@@ -194,61 +194,78 @@ if (process.env.OPENCLAW_DEV_MODE === 'true') {
 // so we don't need to patch the provider config. Writing a provider
 // entry without a models array breaks OpenClaw's config validation.
 
-// AI Gateway model override (CF_AI_GATEWAY_MODEL=provider/model-id)
-// Adds a provider entry for any AI Gateway provider and sets it as default model.
-// Examples:
-//   workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast
-//   openai/gpt-4o
-//   anthropic/claude-sonnet-4-5
-if (process.env.CF_AI_GATEWAY_MODEL) {
-    const raw = process.env.CF_AI_GATEWAY_MODEL;
-    const slashIdx = raw.indexOf('/');
-    const gwProvider = raw.substring(0, slashIdx);
-    const modelId = raw.substring(slashIdx + 1);
+// AI Gateway model override
+// Supports single model (CF_AI_GATEWAY_MODEL) or multiple models (CF_AI_GATEWAY_MODELS)
+// Multiple models example: CF_AI_GATEWAY_MODELS=google/gemini-2.5-flash-lite,google/gemini-2.5-flash,google/gemma-3-12b
+// First model in list becomes primary, others available as fallbacks in Control UI
+const modelList = process.env.CF_AI_GATEWAY_MODELS
+    ? process.env.CF_AI_GATEWAY_MODELS.split(',').map(m => m.trim())
+    : process.env.CF_AI_GATEWAY_MODEL
+    ? [process.env.CF_AI_GATEWAY_MODEL]
+    : [];
 
-    const accountId = process.env.CF_AI_GATEWAY_ACCOUNT_ID;
-    const gatewayId = process.env.CF_AI_GATEWAY_GATEWAY_ID;
-    const apiKey = process.env.CLOUDFLARE_AI_GATEWAY_API_KEY;
+const accountId = process.env.CF_AI_GATEWAY_ACCOUNT_ID;
+const gatewayId = process.env.CF_AI_GATEWAY_GATEWAY_ID;
+const apiKey = process.env.CLOUDFLARE_AI_GATEWAY_API_KEY;
 
-    let baseUrl;
-    if (gwProvider.includes('google')) {
-        // Direct Google API (bypasses AI Gateway for Gemini)
-        baseUrl = 'https://generativelanguage.googleapis.com/v1beta';
-    } else if (accountId && gatewayId) {
-        baseUrl = 'https://gateway.ai.cloudflare.com/v1/' + accountId + '/' + gatewayId + '/' + gwProvider;
-        if (gwProvider === 'workers-ai') baseUrl += '/v1';
-    } else if (gwProvider === 'workers-ai' && process.env.CF_ACCOUNT_ID) {
-        baseUrl = 'https://api.cloudflare.com/client/v4/accounts/' + process.env.CF_ACCOUNT_ID + '/ai/v1';
-    }
+if (modelList.length > 0 && apiKey) {
+    config.models = config.models || {};
+    config.models.providers = config.models.providers || {};
 
-    if (baseUrl && apiKey) {
-        const api = gwProvider === 'anthropic' ? 'anthropic-messages' :
-                    gwProvider.includes('google') ? 'google-generative-ai' :
-                    'openai-completions';
-        const providerName = 'cf-ai-gw-' + gwProvider;
+    let primaryModel = null;
 
-        config.models = config.models || {};
-        config.models.providers = config.models.providers || {};
-        config.models.providers[providerName] = {
-            baseUrl: baseUrl,
-            apiKey: apiKey,
-            api: api,
-            models: [{
-                id: modelId,
-                name: modelId,
-                reasoning: true,
-                input: ['text', 'image'],
-                contextWindow: 131072,
-                maxTokens: 8192
-            }],
-        };
+    modelList.forEach((raw, idx) => {
+        const slashIdx = raw.indexOf('/');
+        const gwProvider = raw.substring(0, slashIdx);
+        const modelId = raw.substring(slashIdx + 1);
+
+        let baseUrl;
+        if (gwProvider.includes('google')) {
+            // Direct Google API (bypasses AI Gateway for Gemini/Gemma)
+            baseUrl = 'https://generativelanguage.googleapis.com/v1beta';
+        } else if (accountId && gatewayId) {
+            baseUrl = 'https://gateway.ai.cloudflare.com/v1/' + accountId + '/' + gatewayId + '/' + gwProvider;
+            if (gwProvider === 'workers-ai') baseUrl += '/v1';
+        } else if (gwProvider === 'workers-ai' && process.env.CF_ACCOUNT_ID) {
+            baseUrl = 'https://api.cloudflare.com/client/v4/accounts/' + process.env.CF_ACCOUNT_ID + '/ai/v1';
+        }
+
+        if (baseUrl) {
+            const api = gwProvider === 'anthropic' ? 'anthropic-messages' :
+                        gwProvider.includes('google') ? 'google-generative-ai' :
+                        'openai-completions';
+            const providerName = 'cf-ai-gw-' + gwProvider + '-' + idx;
+
+            config.models.providers[providerName] = {
+                baseUrl: baseUrl,
+                apiKey: apiKey,
+                api: api,
+                models: [{
+                    id: modelId,
+                    name: modelId,
+                    reasoning: true,
+                    input: ['text', 'image'],
+                    contextWindow: 131072,
+                    maxTokens: 8192
+                }],
+            };
+
+            if (idx === 0) {
+                primaryModel = providerName + '/' + modelId;
+            }
+
+            console.log('Registered model ' + (idx + 1) + '/' + modelList.length + ': provider=' + providerName + ' model=' + modelId + ' via ' + baseUrl);
+        }
+    });
+
+    if (primaryModel) {
         config.agents = config.agents || {};
         config.agents.defaults = config.agents.defaults || {};
-        config.agents.defaults.model = { primary: providerName + '/' + modelId };
-        console.log('AI Gateway model override: provider=' + providerName + ' model=' + modelId + ' via ' + baseUrl);
-    } else {
-        console.warn('CF_AI_GATEWAY_MODEL set but missing required config (account ID, gateway ID, or API key)');
+        config.agents.defaults.model = { primary: primaryModel };
+        console.log('Primary model set to: ' + primaryModel);
     }
+} else if (modelList.length > 0) {
+    console.warn('CF_AI_GATEWAY_MODEL(S) set but missing API key');
 }
 
 // Telegram configuration
