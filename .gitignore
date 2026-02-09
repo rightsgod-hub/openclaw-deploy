@@ -61,3 +61,5 @@ test/e2e/.dev.vars
 
 # Temporary e2e wrangler configs
 .wrangler-e2e-*.jsonc
+# Claude Code plans and local files
+.claude/
