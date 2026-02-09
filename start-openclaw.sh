@@ -211,7 +211,10 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
     const apiKey = process.env.CLOUDFLARE_AI_GATEWAY_API_KEY;
 
     let baseUrl;
-    if (accountId && gatewayId) {
+    if (gwProvider.includes('google')) {
+        // Direct Google API (bypasses AI Gateway for Gemini)
+        baseUrl = 'https://generativelanguage.googleapis.com/v1beta';
+    } else if (accountId && gatewayId) {
         baseUrl = 'https://gateway.ai.cloudflare.com/v1/' + accountId + '/' + gatewayId + '/' + gwProvider;
         if (gwProvider === 'workers-ai') baseUrl += '/v1';
     } else if (gwProvider === 'workers-ai' && process.env.CF_ACCOUNT_ID) {
@@ -230,7 +233,14 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
             baseUrl: baseUrl,
             apiKey: apiKey,
             api: api,
-            models: [{ id: modelId, name: modelId, contextWindow: 131072, maxTokens: 8192 }],
+            models: [{
+                id: modelId,
+                name: modelId,
+                reasoning: true,
+                input: ['text', 'image'],
+                contextWindow: 131072,
+                maxTokens: 8192
+            }],
         };
         config.agents = config.agents || {};
         config.agents.defaults = config.agents.defaults || {};
