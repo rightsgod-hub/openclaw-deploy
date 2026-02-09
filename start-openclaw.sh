@@ -220,7 +220,7 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
 
     if (baseUrl && apiKey) {
         const api = gwProvider === 'anthropic' ? 'anthropic-messages' :
-                    (gwProvider === 'compat' || gwProvider.includes('google')) ? 'google-ai-studio' :
+                    gwProvider.includes('google') ? 'google-generative-ai' :
                     'openai-completions';
         const providerName = 'cf-ai-gw-' + gwProvider;
 
