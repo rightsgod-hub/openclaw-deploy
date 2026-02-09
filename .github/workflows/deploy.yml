@@ -36,8 +36,21 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           command: deploy
+          secrets: |
+            R2_ACCESS_KEY_ID
+            R2_SECRET_ACCESS_KEY
+            CF_ACCOUNT_ID
+            USE_VERTEX_AI
+            GCP_PROJECT_ID
+            GCP_SERVICE_ACCOUNT_KEY
         env:
           WRANGLER_LOG: trace
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          USE_VERTEX_AI: ${{ secrets.USE_VERTEX_AI }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
 
       - name: Upload error logs on failure
         if: failure()
