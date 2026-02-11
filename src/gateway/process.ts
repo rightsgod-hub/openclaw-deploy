@@ -13,6 +13,7 @@ import { mountR2Storage } from './r2';
 export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Process | null> {
   try {
     const processes = await sandbox.listProcesses();
+    console.log(`[findProcess] Checking ${processes.length} processes`);
     for (const proc of processes) {
       // Match gateway process (openclaw gateway or legacy clawdbot gateway)
       // Don't match CLI commands like "openclaw devices list"
@@ -31,11 +32,13 @@ export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Proc
         proc.command.includes('clawdbot --version');
 
       if (isGatewayProcess && !isCliCommand) {
+        console.log(`[findProcess] Found gateway candidate: ${proc.command.substring(0, 80)} status=${proc.status}`);
         if (proc.status === 'starting' || proc.status === 'running') {
           return proc;
         }
       }
     }
+    console.log('[findProcess] No gateway process found');
   } catch (e) {
     console.log('Could not list processes:', e);
   }
