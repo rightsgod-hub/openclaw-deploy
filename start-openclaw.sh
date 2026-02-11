@@ -220,7 +220,15 @@ if (modelList.length > 0 && apiKey) {
         const modelId = raw.substring(slashIdx + 1);
 
         let baseUrl;
-        if (gwProvider.includes('google')) {
+        const useVertexAI = process.env.USE_VERTEX_AI === 'true' && process.env.GCP_PROJECT_ID && process.env.GCP_SERVICE_ACCOUNT_KEY;
+
+        if (gwProvider.includes('google') && useVertexAI) {
+            // Vertex AI (enterprise Google Cloud)
+            const region = process.env.GCP_REGION || 'us-central1';
+            const projectId = process.env.GCP_PROJECT_ID;
+            baseUrl = 'https://' + region + '-aiplatform.googleapis.com/v1/projects/' + projectId + '/locations/' + region + '/publishers/google';
+            console.log('Using Vertex AI endpoint: ' + baseUrl);
+        } else if (gwProvider.includes('google')) {
             // Direct Google API (bypasses AI Gateway for Gemini/Gemma)
             baseUrl = 'https://generativelanguage.googleapis.com/v1beta';
         } else if (accountId && gatewayId) {
@@ -236,9 +244,8 @@ if (modelList.length > 0 && apiKey) {
                         'openai-completions';
             const providerName = 'cf-ai-gw-' + gwProvider + '-' + idx;
 
-            config.models.providers[providerName] = {
+            const providerConfig = {
                 baseUrl: baseUrl,
-                apiKey: apiKey,
                 api: api,
                 models: [{
                     id: modelId,
@@ -249,6 +256,15 @@ if (modelList.length > 0 && apiKey) {
                     maxTokens: 8192
                 }],
             };
+
+            // Authentication: Vertex AI uses service account, others use API key
+            if (useVertexAI && gwProvider.includes('google')) {
+                providerConfig.serviceAccountKey = process.env.GCP_SERVICE_ACCOUNT_KEY;
+            } else {
+                providerConfig.apiKey = apiKey;
+            }
+
+            config.models.providers[providerName] = providerConfig;
 
             if (idx === 0) {
                 primaryModel = providerName + '/' + modelId;
