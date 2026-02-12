@@ -462,6 +462,18 @@ async function scheduled(
     return;
   }
 
+  // 新規追加: 同期前にgatewayが実際に応答可能か検証
+  // DOリセット中、プロセスは存在するがportは未ready
+  // これによりcronがDOリセットを再誘発するのを防ぐ
+  try {
+    console.log('[cron] Verifying gateway responsiveness...');
+    await gatewayProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
+    console.log('[cron] Gateway is responsive, proceeding with sync');
+  } catch (e) {
+    console.log('[cron] Gateway exists but port not ready (likely DO resetting), skipping sync');
+    return;
+  }
+
   console.log('[cron] Starting backup sync to R2...');
   const result = await syncToR2(sandbox, env);
 
