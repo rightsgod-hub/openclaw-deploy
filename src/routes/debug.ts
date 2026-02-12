@@ -1,6 +1,23 @@
 import { Hono } from 'hono';
-import type { AppEnv } from '../types';
-import { findExistingMoltbotProcess } from '../gateway';
+import { getSandbox, type SandboxOptions } from '@cloudflare/sandbox';
+import type { AppEnv, MoltbotEnv } from '../types';
+import { findExistingMoltbotProcess, ensureMoltbotGateway } from '../gateway';
+
+/**
+ * Build sandbox options based on environment configuration.
+ * Duplicated from index.ts to avoid circular dependencies.
+ */
+function buildSandboxOptions(env: MoltbotEnv): SandboxOptions {
+  const sleepAfter = env.SANDBOX_SLEEP_AFTER?.toLowerCase() || 'never';
+
+  // 'never' means keep the container alive indefinitely
+  if (sleepAfter === 'never') {
+    return { keepAlive: true };
+  }
+
+  // Otherwise, use the specified duration
+  return { sleepAfter };
+}
 
 /**
  * Debug routes for inspecting container state
@@ -398,6 +415,60 @@ debug.get('/container-config', async (c) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return c.json({ error: errorMessage }, 500);
+  }
+});
+
+// GET /debug/test-cron - Manually trigger the cron logic for testing
+debug.get('/test-cron', async (c) => {
+  try {
+    const env = c.env;
+    console.log('[debug/test-cron] Starting manual cron test');
+
+    const options = buildSandboxOptions(env);
+    const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
+
+    const gatewayProcess = await findExistingMoltbotProcess(sandbox);
+    if (!gatewayProcess) {
+      console.log('[debug/test-cron] Gateway not running, attempting to start...');
+      try {
+        await ensureMoltbotGateway(sandbox, env);
+        console.log('[debug/test-cron] Gateway started successfully');
+        return c.json({
+          status: 'ok',
+          message: 'Gateway started successfully. Refresh dashboard to connect.',
+        });
+      } catch (startError) {
+        const errorMessage = startError instanceof Error ? startError.message : 'Unknown error';
+        const errorStack = startError instanceof Error ? startError.stack : undefined;
+        console.error('[debug/test-cron] Failed to start gateway:', startError);
+        return c.json(
+          {
+            status: 'error',
+            error: errorMessage,
+            details: errorStack,
+          },
+          500,
+        );
+      }
+    }
+
+    return c.json({
+      status: 'ok',
+      message: 'Gateway already running',
+      processId: gatewayProcess.id,
+      processStatus: gatewayProcess.status,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    return c.json(
+      {
+        status: 'error',
+        error: errorMessage,
+        stack: errorStack,
+      },
+      500,
+    );
   }
 });
 
