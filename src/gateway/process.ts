@@ -20,7 +20,7 @@ export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Proc
       const isGatewayProcess =
         proc.command.includes('start-openclaw.sh') ||
         proc.command.includes('openclaw gateway') ||
-        proc.command.includes('openclaw-gateway') ||  // Hyphenated version
+        proc.command.includes('openclaw-gateway') || // Hyphenated version
         // Legacy: match old startup script during transition
         proc.command.includes('start-moltbot.sh') ||
         proc.command.includes('clawdbot gateway');
@@ -32,7 +32,9 @@ export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Proc
         proc.command.includes('clawdbot --version');
 
       if (isGatewayProcess && !isCliCommand) {
-        console.log(`[findProcess] Found gateway candidate: ${proc.command.substring(0, 80)} status=${proc.status}`);
+        console.log(
+          `[findProcess] Found gateway candidate: ${proc.command.substring(0, 80)} status=${proc.status}`,
+        );
         if (proc.status === 'starting' || proc.status === 'running') {
           return proc;
         }
