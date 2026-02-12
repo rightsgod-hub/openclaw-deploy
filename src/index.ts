@@ -453,34 +453,40 @@ async function scheduled(
   env: MoltbotEnv,
   _ctx: ExecutionContext,
 ): Promise<void> {
-  const options = buildSandboxOptions(env);
-  const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
-
-  const gatewayProcess = await findExistingMoltbotProcess(sandbox);
-  if (!gatewayProcess) {
-    console.log('[cron] Gateway not running yet, skipping sync');
-    return;
-  }
-
-  // 新規追加: 同期前にgatewayが実際に応答可能か検証
-  // DOリセット中、プロセスは存在するがportは未ready
-  // これによりcronがDOリセットを再誘発するのを防ぐ
   try {
-    console.log('[cron] Verifying gateway responsiveness...');
-    await gatewayProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
-    console.log('[cron] Gateway is responsive, proceeding with sync');
-  } catch (e) {
-    console.log('[cron] Gateway exists but port not ready (likely DO resetting), skipping sync');
-    return;
-  }
+    console.log('[cron] Cron triggered');
+    const options = buildSandboxOptions(env);
+    const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
-  console.log('[cron] Starting backup sync to R2...');
-  const result = await syncToR2(sandbox, env);
+    const gatewayProcess = await findExistingMoltbotProcess(sandbox);
+    if (!gatewayProcess) {
+      console.log('[cron] Gateway not running yet, skipping sync');
+      return;
+    }
 
-  if (result.success) {
-    console.log('[cron] Backup sync completed successfully at', result.lastSync);
-  } else {
-    console.error('[cron] Backup sync failed:', result.error, result.details || '');
+    // 新規追加: 同期前にgatewayが実際に応答可能か検証
+    // DOリセット中、プロセスは存在するがportは未ready
+    // これによりcronがDOリセットを再誘発するのを防ぐ
+    try {
+      console.log('[cron] Verifying gateway responsiveness...');
+      await gatewayProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
+      console.log('[cron] Gateway is responsive, proceeding with sync');
+    } catch (e) {
+      console.log('[cron] Gateway exists but port not ready (likely DO resetting), skipping sync');
+      return;
+    }
+
+    console.log('[cron] Starting backup sync to R2...');
+    const result = await syncToR2(sandbox, env);
+
+    if (result.success) {
+      console.log('[cron] Backup sync completed successfully at', result.lastSync);
+    } else {
+      console.error('[cron] Backup sync failed:', result.error, result.details || '');
+    }
+  } catch (error) {
+    console.error('[cron] Fatal error:', error);
+    console.error('[cron] Error stack:', error instanceof Error ? error.stack : 'No stack trace');
   }
 }
 
