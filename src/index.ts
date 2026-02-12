@@ -458,10 +458,19 @@ async function scheduled(
     const options = buildSandboxOptions(env);
     const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
-    const gatewayProcess = await findExistingMoltbotProcess(sandbox);
+    let gatewayProcess = await findExistingMoltbotProcess(sandbox);
     if (!gatewayProcess) {
-      console.log('[cron] Gateway not running yet, skipping sync');
-      return;
+      console.log('[cron] Gateway not running, attempting to start...');
+      try {
+        await ensureMoltbotGateway(sandbox, env);
+        console.log(
+          '[cron] Gateway started successfully, skipping sync this round (waiting for gateway to initialize)',
+        );
+        return;
+      } catch (startError) {
+        console.error('[cron] Failed to start gateway:', startError);
+        return;
+      }
     }
 
     // 新規追加: 同期前にgatewayが実際に応答可能か検証
