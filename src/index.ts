@@ -20,6 +20,8 @@
  * - SLACK_BOT_TOKEN + SLACK_APP_TOKEN: Slack tokens
  */
 
+// R2 config structure fixed: .last-sync moved to root, openclaw.json in openclaw/
+
 import { Hono } from 'hono';
 import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
 
