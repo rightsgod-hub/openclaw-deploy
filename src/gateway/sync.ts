@@ -47,17 +47,29 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
   let configDir = '/root/.openclaw';
   try {
     const checkNew = await sandbox.startProcess('test -f /root/.openclaw/openclaw.json');
-    await waitForProcess(checkNew, 5000);
-    if (checkNew.exitCode !== 0) {
+    await waitForProcess(checkNew, 10000);  // 5秒 → 10秒に延長
+
+    console.log('[sync] File check result:', {
+      exitCode: checkNew.exitCode,
+      status: checkNew.status,
+    });
+
+    if (checkNew.exitCode === undefined || checkNew.exitCode !== 0) {
       const checkLegacy = await sandbox.startProcess('test -f /root/.clawdbot/clawdbot.json');
-      await waitForProcess(checkLegacy, 5000);
+      await waitForProcess(checkLegacy, 10000);
+
+      console.log('[sync] Legacy file check result:', {
+        exitCode: checkLegacy.exitCode,
+        status: checkLegacy.status,
+      });
+
       if (checkLegacy.exitCode === 0) {
         configDir = '/root/.clawdbot';
       } else {
         return {
           success: false,
           error: 'Sync aborted: no config file found',
-          details: 'Neither openclaw.json nor clawdbot.json found in config directory.',
+          details: `Neither openclaw.json nor clawdbot.json found. New exitCode: ${checkNew.exitCode}, Legacy exitCode: ${checkLegacy.exitCode}`,
         };
       }
     }
