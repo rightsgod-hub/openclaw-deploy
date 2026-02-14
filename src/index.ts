@@ -312,9 +312,7 @@ app.all('*', async (c) => {
       return containerResponse;
     }
 
-    if (debugLogs) {
-      console.log('[WS] Got container WebSocket, setting up interception');
-    }
+    console.log('[WS] Got container WebSocket, setting up interception');
 
     // Create a WebSocket pair for the client
     const [clientWs, serverWs] = Object.values(new WebSocketPair());
@@ -323,11 +321,9 @@ app.all('*', async (c) => {
     serverWs.accept();
     containerWs.accept();
 
-    if (debugLogs) {
-      console.log('[WS] Both WebSockets accepted');
-      console.log('[WS] containerWs.readyState:', containerWs.readyState);
-      console.log('[WS] serverWs.readyState:', serverWs.readyState);
-    }
+    console.log('[WS] Both WebSockets accepted');
+    console.log('[WS] containerWs.readyState:', containerWs.readyState);
+    console.log('[WS] serverWs.readyState:', serverWs.readyState);
 
     // Relay messages from client to container
     serverWs.addEventListener('message', (event) => {
@@ -340,8 +336,34 @@ app.all('*', async (c) => {
       }
       if (containerWs.readyState === WebSocket.OPEN) {
         containerWs.send(event.data);
-      } else if (debugLogs) {
-        console.log('[WS] Container not open, readyState:', containerWs.readyState);
+      } else {
+        // Container is not open - log error and notify client
+        console.error('[WS] Container not open, cannot send message. readyState:', containerWs.readyState);
+        console.error('[WS] Target URL:', url.pathname);
+
+        // Try to parse client message to extract ID for error response
+        let messageId = 'unknown';
+        if (typeof event.data === 'string') {
+          try {
+            const parsed = JSON.parse(event.data);
+            if (parsed.id) messageId = parsed.id;
+          } catch (e) {
+            // Not JSON, ignore
+          }
+        }
+
+        // Send error response to client
+        if (serverWs.readyState === WebSocket.OPEN) {
+          const errorResponse = JSON.stringify({
+            type: 'error',
+            id: messageId,
+            error: {
+              code: 'CONTAINER_DISCONNECTED',
+              message: 'Container WebSocket is not connected. The gateway may have restarted or is still booting.',
+            },
+          });
+          serverWs.send(errorResponse);
+        }
       }
     });
 
@@ -382,31 +404,31 @@ app.all('*', async (c) => {
 
       if (serverWs.readyState === WebSocket.OPEN) {
         serverWs.send(data);
-      } else if (debugLogs) {
-        console.log('[WS] Server not open, readyState:', serverWs.readyState);
+      } else {
+        // Server (client) is not open - cannot deliver message
+        console.error(
+          '[WS] Server (client) not open, cannot deliver message. readyState:',
+          serverWs.readyState,
+          'data preview:',
+          typeof data === 'string' ? data.slice(0, 100) : '(binary)',
+        );
       }
     });
 
     // Handle close events
     serverWs.addEventListener('close', (event) => {
-      if (debugLogs) {
-        console.log('[WS] Client closed:', event.code, event.reason);
-      }
+      console.log('[WS] Client closed:', event.code, event.reason);
       containerWs.close(event.code, event.reason);
     });
 
     containerWs.addEventListener('close', (event) => {
-      if (debugLogs) {
-        console.log('[WS] Container closed:', event.code, event.reason);
-      }
+      console.warn('[WS] Container closed:', event.code, event.reason);
       // Transform the close reason (truncate to 123 bytes max for WebSocket spec)
       let reason = transformErrorMessage(event.reason, url.host);
       if (reason.length > 123) {
         reason = reason.slice(0, 120) + '...';
       }
-      if (debugLogs) {
-        console.log('[WS] Transformed close reason:', reason);
-      }
+      console.warn('[WS] Transformed close reason:', reason);
       serverWs.close(event.code, reason);
     });
 
