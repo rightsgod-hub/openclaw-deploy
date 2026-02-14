@@ -41,42 +41,47 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
     return { success: false, error: 'Failed to mount R2 storage' };
   }
 
-  // Determine which config directory exists
-  // Check new path first, fall back to legacy
-  // Use exit code (0 = exists) rather than stdout parsing to avoid log-flush races
+  // Determine which config directory exists by reading the config file
+  // Use cat to read file content directly instead of test -f
   let configDir = '/root/.openclaw';
   try {
-    const checkNew = await sandbox.startProcess('test -f /root/.openclaw/openclaw.json');
-    await waitForProcess(checkNew, 10000);  // 5秒 → 10秒に延長
+    const catNew = await sandbox.startProcess('cat /root/.openclaw/openclaw.json');
+    await waitForProcess(catNew, 10000);
+    const newLogs = await catNew.getLogs();
 
-    console.log('[sync] File check result:', {
-      exitCode: checkNew.exitCode,
-      status: checkNew.status,
+    console.log('[sync] New config check result:', {
+      exitCode: catNew.exitCode,
+      status: catNew.status,
+      stdoutLength: newLogs.stdout?.length || 0,
+      hasContent: !!newLogs.stdout && newLogs.stdout.trim().length > 0,
     });
 
-    if (checkNew.exitCode === undefined || checkNew.exitCode !== 0) {
-      const checkLegacy = await sandbox.startProcess('test -f /root/.clawdbot/clawdbot.json');
-      await waitForProcess(checkLegacy, 10000);
+    if (!newLogs.stdout || newLogs.stdout.trim().length === 0) {
+      const catLegacy = await sandbox.startProcess('cat /root/.clawdbot/clawdbot.json');
+      await waitForProcess(catLegacy, 10000);
+      const legacyLogs = await catLegacy.getLogs();
 
-      console.log('[sync] Legacy file check result:', {
-        exitCode: checkLegacy.exitCode,
-        status: checkLegacy.status,
+      console.log('[sync] Legacy config check result:', {
+        exitCode: catLegacy.exitCode,
+        status: catLegacy.status,
+        stdoutLength: legacyLogs.stdout?.length || 0,
+        hasContent: !!legacyLogs.stdout && legacyLogs.stdout.trim().length > 0,
       });
 
-      if (checkLegacy.exitCode === 0) {
+      if (legacyLogs.stdout && legacyLogs.stdout.trim().length > 0) {
         configDir = '/root/.clawdbot';
       } else {
         return {
           success: false,
           error: 'Sync aborted: no config file found',
-          details: `Neither openclaw.json nor clawdbot.json found. New exitCode: ${checkNew.exitCode}, Legacy exitCode: ${checkLegacy.exitCode}`,
+          details: `Neither openclaw.json nor clawdbot.json readable. New: ${newLogs.stderr || 'empty'}, Legacy: ${legacyLogs.stderr || 'empty'}`,
         };
       }
     }
   } catch (err) {
     return {
       success: false,
-      error: 'Failed to verify source files',
+      error: 'Failed to read config files',
       details: err instanceof Error ? err.message : 'Unknown error',
     };
   }
