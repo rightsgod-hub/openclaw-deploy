@@ -418,7 +418,9 @@ app.all('*', async (c) => {
     // Handle close events
     serverWs.addEventListener('close', (event) => {
       console.log('[WS] Client closed:', event.code, event.reason);
-      containerWs.close(event.code, event.reason);
+      // 1006 is an internal code and cannot be used in close()
+      const closeCode = event.code === 1006 ? 1001 : event.code;
+      containerWs.close(closeCode, event.reason);
     });
 
     containerWs.addEventListener('close', (event) => {
@@ -429,7 +431,11 @@ app.all('*', async (c) => {
         reason = reason.slice(0, 120) + '...';
       }
       console.warn('[WS] Transformed close reason:', reason);
-      serverWs.close(event.code, reason);
+
+      // 1006 is an internal code and cannot be used in close()
+      // Convert to 1001 (Going Away) for abnormal closures
+      const closeCode = event.code === 1006 ? 1001 : event.code;
+      serverWs.close(closeCode, reason);
     });
 
     // Handle errors
