@@ -6,6 +6,7 @@ import {
   restartGateway,
   getStorageStatus,
   triggerSync,
+  cleanupProcesses,
   AuthError,
   type PendingDevice,
   type PairedDevice,
@@ -54,6 +55,7 @@ export default function AdminPage() {
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [restartInProgress, setRestartInProgress] = useState(false);
   const [syncInProgress, setSyncInProgress] = useState(false);
+  const [cleanupInProgress, setCleanupInProgress] = useState(false);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -172,6 +174,33 @@ export default function AdminPage() {
     }
   };
 
+  const handleCleanupProcesses = async () => {
+    if (
+      !confirm(
+        'Are you sure you want to clean up all completed processes? This will clear accumulated processes but keep the gateway running.',
+      )
+    ) {
+      return;
+    }
+
+    setCleanupInProgress(true);
+    try {
+      const result = await cleanupProcesses();
+      if (result.success) {
+        setError(null);
+        alert(
+          `Process cleanup completed!\n\nTotal processes: ${result.totalBefore}\nKilled: ${result.killed}\nSkipped (active gateway): ${result.skipped}\nErrors: ${result.errors}`,
+        );
+      } else {
+        setError(result.error || 'Cleanup failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to cleanup processes');
+    } finally {
+      setCleanupInProgress(false);
+    }
+  };
+
   return (
     <div className="devices-page">
       {error && (
@@ -232,18 +261,31 @@ export default function AdminPage() {
       <section className="devices-section gateway-section">
         <div className="section-header">
           <h2>Gateway Controls</h2>
-          <button
-            className="btn btn-danger"
-            onClick={handleRestartGateway}
-            disabled={restartInProgress}
-          >
-            {restartInProgress && <ButtonSpinner />}
-            {restartInProgress ? 'Restarting...' : 'Restart Gateway'}
-          </button>
+          <div className="header-actions">
+            <button
+              className="btn btn-secondary"
+              onClick={handleCleanupProcesses}
+              disabled={cleanupInProgress}
+            >
+              {cleanupInProgress && <ButtonSpinner />}
+              {cleanupInProgress ? 'Cleaning...' : 'Cleanup Processes'}
+            </button>
+            <button
+              className="btn btn-danger"
+              onClick={handleRestartGateway}
+              disabled={restartInProgress}
+            >
+              {restartInProgress && <ButtonSpinner />}
+              {restartInProgress ? 'Restarting...' : 'Restart Gateway'}
+            </button>
+          </div>
         </div>
         <p className="hint">
-          Restart the gateway to apply configuration changes or recover from errors. All connected
-          clients will be temporarily disconnected.
+          <strong>Cleanup Processes:</strong> Remove all completed processes to free resources
+          (keeps gateway running).
+          <br />
+          <strong>Restart Gateway:</strong> Restart the gateway to apply configuration changes or
+          recover from errors.
         </p>
       </section>
 

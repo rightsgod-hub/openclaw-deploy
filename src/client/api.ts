@@ -137,3 +137,19 @@ export async function triggerSync(): Promise<SyncResponse> {
     method: 'POST',
   });
 }
+
+export interface CleanupProcessesResponse {
+  success: boolean;
+  message?: string;
+  totalBefore: number;
+  killed: number;
+  skipped: number;
+  errors: number;
+  error?: string;
+}
+
+export async function cleanupProcesses(): Promise<CleanupProcessesResponse> {
+  return apiRequest<CleanupProcessesResponse>('/processes/cleanup', {
+    method: 'POST',
+  });
+}
