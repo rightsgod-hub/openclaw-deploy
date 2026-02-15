@@ -3,12 +3,12 @@ import type { MoltbotEnv } from '../types';
 import { R2_MOUNT_PATH, getR2BucketName } from '../config';
 
 /**
- * Check if R2 is already mounted by looking at the mount table
+ * Check if R2 is already mounted by checking if we can access the mount point
+ * (Lightweight check - no mount table parsing needed)
  */
 async function isR2Mounted(sandbox: Sandbox): Promise<boolean> {
-  let proc;
   try {
-    proc = await sandbox.startProcess(`mount | grep "s3fs on ${R2_MOUNT_PATH}"`);
+    const proc = await sandbox.startProcess(`test -d ${R2_MOUNT_PATH}`);
     // Wait for the command to complete
     let attempts = 0;
     while (proc.status === 'running' && attempts < 10) {
@@ -16,25 +16,12 @@ async function isR2Mounted(sandbox: Sandbox): Promise<boolean> {
       await new Promise((r) => setTimeout(r, 200));
       attempts++;
     }
-    const logs = await proc.getLogs();
-    // If stdout has content, the mount exists
-    const mounted = !!(logs.stdout && logs.stdout.includes('s3fs'));
-    console.log('isR2Mounted check:', mounted, 'stdout:', logs.stdout?.slice(0, 100));
-
+    const mounted = proc.exitCode === 0;
+    console.log('isR2Mounted check:', mounted);
     return mounted;
   } catch (err) {
     console.log('isR2Mounted error:', err);
     return false;
-  } finally {
-    // Always clean up the process, regardless of success or error
-    if (proc) {
-      try {
-        await proc.kill();
-      } catch (killErr) {
-        // Ignore kill errors - process may have already exited
-        console.log('isR2Mounted: process cleanup (non-critical):', killErr);
-      }
-    }
   }
 }
 
