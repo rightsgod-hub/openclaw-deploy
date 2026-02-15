@@ -68,6 +68,14 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
         hasContent: !!legacyLogs.stdout && legacyLogs.stdout.trim().length > 0,
       });
 
+      // Clean up both processes
+      try {
+        await catNew.kill();
+        await catLegacy.kill();
+      } catch (killErr) {
+        console.log('[sync] process cleanup (non-critical):', killErr);
+      }
+
       if (legacyLogs.stdout && legacyLogs.stdout.trim().length > 0) {
         configDir = '/root/.clawdbot';
       } else {
@@ -76,6 +84,13 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
           error: 'Sync aborted: no config file found',
           details: `Neither openclaw.json nor clawdbot.json readable. New: ${newLogs.stderr || 'empty'}, Legacy: ${legacyLogs.stderr || 'empty'}`,
         };
+      }
+    } else {
+      // Clean up the new config check process
+      try {
+        await catNew.kill();
+      } catch (killErr) {
+        console.log('[sync] process cleanup (non-critical):', killErr);
       }
     }
   } catch (err) {
@@ -99,6 +114,14 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
     await waitForProcess(timestampProc, 5000);
     const timestampLogs = await timestampProc.getLogs();
     const lastSync = timestampLogs.stdout?.trim();
+
+    // Clean up processes
+    try {
+      await proc.kill();
+      await timestampProc.kill();
+    } catch (killErr) {
+      console.log('[sync] process cleanup (non-critical):', killErr);
+    }
 
     if (lastSync && lastSync.match(/^\d{4}-\d{2}-\d{2}/)) {
       return { success: true, lastSync };
