@@ -307,47 +307,24 @@ adminApi.post('/gateway/restart', async (c) => {
   }
 });
 
-// POST /api/admin/processes/cleanup - Kill all completed/failed processes
-adminApi.post('/processes/cleanup', async (c) => {
+// GET /api/admin/processes - List all processes (for debugging)
+adminApi.get('/processes', async (c) => {
   const sandbox = c.get('sandbox');
 
   try {
     const processes = await sandbox.listProcesses();
-    const totalBefore = processes.length;
 
-    // Kill all processes except running/starting gateway
-    const killPromises = processes.map(async (proc) => {
-      // Keep the active gateway process
-      const isActiveGateway =
-        (proc.command.includes('start-openclaw.sh') || proc.command.includes('openclaw gateway')) &&
-        (proc.status === 'starting' || proc.status === 'running');
-
-      if (isActiveGateway) {
-        return { id: proc.id, skipped: true, reason: 'active gateway' };
-      }
-
-      // Kill everything else
-      try {
-        await proc.kill();
-        return { id: proc.id, killed: true };
-      } catch (err) {
-        return { id: proc.id, error: err instanceof Error ? err.message : 'Unknown error' };
-      }
-    });
-
-    const results = await Promise.all(killPromises);
-    const killed = results.filter((r) => r.killed).length;
-    const skipped = results.filter((r) => r.skipped).length;
-    const errors = results.filter((r) => r.error).length;
+    // Extract safe info for each process
+    const processInfo = processes.map((proc) => ({
+      id: proc.id,
+      command: proc.command.substring(0, 200), // Truncate long commands
+      status: proc.status,
+      exitCode: proc.exitCode,
+    }));
 
     return c.json({
-      success: true,
-      message: `Cleaned up ${killed} processes (${skipped} skipped, ${errors} errors)`,
-      totalBefore,
-      killed,
-      skipped,
-      errors,
-      details: results,
+      total: processes.length,
+      processes: processInfo,
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';

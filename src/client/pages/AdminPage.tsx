@@ -6,12 +6,13 @@ import {
   restartGateway,
   getStorageStatus,
   triggerSync,
-  cleanupProcesses,
+  listProcessesInfo,
   AuthError,
   type PendingDevice,
   type PairedDevice,
   type DeviceListResponse,
   type StorageStatusResponse,
+  type ProcessInfo,
 } from '../api';
 import './AdminPage.css';
 
@@ -55,7 +56,10 @@ export default function AdminPage() {
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [restartInProgress, setRestartInProgress] = useState(false);
   const [syncInProgress, setSyncInProgress] = useState(false);
-  const [cleanupInProgress, setCleanupInProgress] = useState(false);
+  const [processInfo, setProcessInfo] = useState<{ total: number; processes: ProcessInfo[] } | null>(
+    null,
+  );
+  const [processInfoLoading, setProcessInfoLoading] = useState(false);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -174,30 +178,16 @@ export default function AdminPage() {
     }
   };
 
-  const handleCleanupProcesses = async () => {
-    if (
-      !confirm(
-        'Are you sure you want to clean up all completed processes? This will clear accumulated processes but keep the gateway running.',
-      )
-    ) {
-      return;
-    }
-
-    setCleanupInProgress(true);
+  const handleLoadProcessInfo = async () => {
+    setProcessInfoLoading(true);
     try {
-      const result = await cleanupProcesses();
-      if (result.success) {
-        setError(null);
-        alert(
-          `Process cleanup completed!\n\nTotal processes: ${result.totalBefore}\nKilled: ${result.killed}\nSkipped (active gateway): ${result.skipped}\nErrors: ${result.errors}`,
-        );
-      } else {
-        setError(result.error || 'Cleanup failed');
-      }
+      const result = await listProcessesInfo();
+      setProcessInfo({ total: result.total, processes: result.processes });
+      setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to cleanup processes');
+      setError(err instanceof Error ? err.message : 'Failed to load process info');
     } finally {
-      setCleanupInProgress(false);
+      setProcessInfoLoading(false);
     }
   };
 
@@ -264,11 +254,11 @@ export default function AdminPage() {
           <div className="header-actions">
             <button
               className="btn btn-secondary"
-              onClick={handleCleanupProcesses}
-              disabled={cleanupInProgress}
+              onClick={handleLoadProcessInfo}
+              disabled={processInfoLoading}
             >
-              {cleanupInProgress && <ButtonSpinner />}
-              {cleanupInProgress ? 'Cleaning...' : 'Cleanup Processes'}
+              {processInfoLoading && <ButtonSpinner />}
+              {processInfoLoading ? 'Loading...' : 'Show Processes'}
             </button>
             <button
               className="btn btn-danger"
@@ -281,12 +271,41 @@ export default function AdminPage() {
           </div>
         </div>
         <p className="hint">
-          <strong>Cleanup Processes:</strong> Remove all completed processes to free resources
-          (keeps gateway running).
+          <strong>Show Processes:</strong> Display current container processes for debugging.
           <br />
           <strong>Restart Gateway:</strong> Restart the gateway to apply configuration changes or
           recover from errors.
         </p>
+
+        {processInfo && (
+          <div className="process-info" style={{ marginTop: '1rem' }}>
+            <h3>Container Processes ({processInfo.total} total)</h3>
+            <div
+              style={{
+                maxHeight: '400px',
+                overflow: 'auto',
+                background: '#f5f5f5',
+                padding: '1rem',
+                borderRadius: '4px',
+                fontSize: '12px',
+                fontFamily: 'monospace',
+              }}
+            >
+              {processInfo.processes.map((proc) => (
+                <div
+                  key={proc.id}
+                  style={{ marginBottom: '0.5rem', borderBottom: '1px solid #ddd' }}
+                >
+                  <div>
+                    <strong>ID:</strong> {proc.id} | <strong>Status:</strong> {proc.status}
+                    {proc.exitCode !== undefined && ` | Exit: ${proc.exitCode}`}
+                  </div>
+                  <div style={{ color: '#666' }}>{proc.command}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </section>
 
       {loading ? (
