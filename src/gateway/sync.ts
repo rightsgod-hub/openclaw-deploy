@@ -44,8 +44,10 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
   // Determine which config directory exists by reading the config file
   // Use cat to read file content directly instead of test -f
   let configDir = '/root/.openclaw';
+  let catNew;
+  let catLegacy;
   try {
-    const catNew = await sandbox.startProcess('cat /root/.openclaw/openclaw.json');
+    catNew = await sandbox.startProcess('cat /root/.openclaw/openclaw.json');
     await waitForProcess(catNew, 10000);
     const newLogs = await catNew.getLogs();
 
@@ -57,7 +59,7 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
     });
 
     if (!newLogs.stdout || newLogs.stdout.trim().length === 0) {
-      const catLegacy = await sandbox.startProcess('cat /root/.clawdbot/clawdbot.json');
+      catLegacy = await sandbox.startProcess('cat /root/.clawdbot/clawdbot.json');
       await waitForProcess(catLegacy, 10000);
       const legacyLogs = await catLegacy.getLogs();
 
@@ -68,14 +70,6 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
         hasContent: !!legacyLogs.stdout && legacyLogs.stdout.trim().length > 0,
       });
 
-      // Clean up both processes
-      try {
-        await catNew.kill();
-        await catLegacy.kill();
-      } catch (killErr) {
-        console.log('[sync] process cleanup (non-critical):', killErr);
-      }
-
       if (legacyLogs.stdout && legacyLogs.stdout.trim().length > 0) {
         configDir = '/root/.clawdbot';
       } else {
@@ -85,13 +79,6 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
           details: `Neither openclaw.json nor clawdbot.json readable. New: ${newLogs.stderr || 'empty'}, Legacy: ${legacyLogs.stderr || 'empty'}`,
         };
       }
-    } else {
-      // Clean up the new config check process
-      try {
-        await catNew.kill();
-      } catch (killErr) {
-        console.log('[sync] process cleanup (non-critical):', killErr);
-      }
     }
   } catch (err) {
     return {
@@ -99,29 +86,39 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
       error: 'Failed to read config files',
       details: err instanceof Error ? err.message : 'Unknown error',
     };
+  } finally {
+    // Always clean up processes, regardless of success or error
+    if (catNew) {
+      try {
+        await catNew.kill();
+      } catch (killErr) {
+        console.log('[sync] catNew cleanup (non-critical):', killErr);
+      }
+    }
+    if (catLegacy) {
+      try {
+        await catLegacy.kill();
+      } catch (killErr) {
+        console.log('[sync] catLegacy cleanup (non-critical):', killErr);
+      }
+    }
   }
 
   // Sync to the new openclaw/ R2 prefix (even if source is legacy .clawdbot)
   // Also sync workspace directory (excluding skills since they're synced separately)
   const syncCmd = `rsync -r --no-times --delete --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' ${configDir}/ ${R2_MOUNT_PATH}/openclaw/ && rsync -r --no-times --delete --exclude='skills' /root/clawd/ ${R2_MOUNT_PATH}/workspace/ && rsync -r --no-times --delete /root/clawd/skills/ ${R2_MOUNT_PATH}/skills/ && date -Iseconds > ${R2_MOUNT_PATH}/.last-sync`;
 
+  let proc;
+  let timestampProc;
   try {
-    const proc = await sandbox.startProcess(syncCmd);
+    proc = await sandbox.startProcess(syncCmd);
     await waitForProcess(proc, 600000); // 10 minute timeout for sync (s3fs is slow)
 
     // Check for success by reading the timestamp file
-    const timestampProc = await sandbox.startProcess(`cat ${R2_MOUNT_PATH}/.last-sync`);
+    timestampProc = await sandbox.startProcess(`cat ${R2_MOUNT_PATH}/.last-sync`);
     await waitForProcess(timestampProc, 5000);
     const timestampLogs = await timestampProc.getLogs();
     const lastSync = timestampLogs.stdout?.trim();
-
-    // Clean up processes
-    try {
-      await proc.kill();
-      await timestampProc.kill();
-    } catch (killErr) {
-      console.log('[sync] process cleanup (non-critical):', killErr);
-    }
 
     if (lastSync && lastSync.match(/^\d{4}-\d{2}-\d{2}/)) {
       return { success: true, lastSync };
@@ -139,5 +136,21 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
       error: 'Sync error',
       details: err instanceof Error ? err.message : 'Unknown error',
     };
+  } finally {
+    // Always clean up processes, regardless of success or error
+    if (proc) {
+      try {
+        await proc.kill();
+      } catch (killErr) {
+        console.log('[sync] proc cleanup (non-critical):', killErr);
+      }
+    }
+    if (timestampProc) {
+      try {
+        await timestampProc.kill();
+      } catch (killErr) {
+        console.log('[sync] timestampProc cleanup (non-critical):', killErr);
+      }
+    }
   }
 }

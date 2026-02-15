@@ -21,28 +21,20 @@ async function isR2Mounted(sandbox: Sandbox): Promise<boolean> {
     const mounted = !!(logs.stdout && logs.stdout.includes('s3fs'));
     console.log('isR2Mounted check:', mounted, 'stdout:', logs.stdout?.slice(0, 100));
 
-    // Clean up the process to prevent accumulation
-    try {
-      await proc.kill();
-    } catch (killErr) {
-      // Ignore kill errors - process may have already exited
-      console.log('isR2Mounted: process cleanup (non-critical):', killErr);
-    }
-
     return mounted;
   } catch (err) {
     console.log('isR2Mounted error:', err);
-
-    // Clean up the process even on error
+    return false;
+  } finally {
+    // Always clean up the process, regardless of success or error
     if (proc) {
       try {
         await proc.kill();
       } catch (killErr) {
-        // Ignore
+        // Ignore kill errors - process may have already exited
+        console.log('isR2Mounted: process cleanup (non-critical):', killErr);
       }
     }
-
-    return false;
   }
 }
 
