@@ -523,6 +523,16 @@ async function scheduled(
     } else {
       console.error('[cron] Backup sync failed:', result.error, result.details || '');
     }
+
+    // Clean up completed/failed zombie processes every cron cycle
+    try {
+      const cleaned = await sandbox.cleanupCompletedProcesses();
+      if (cleaned > 0) {
+        console.log(`[cron] Cleaned up ${cleaned} completed processes`);
+      }
+    } catch (cleanupErr) {
+      console.error('[cron] Process cleanup failed:', cleanupErr);
+    }
   } catch (error) {
     console.error('[cron] Fatal error:', error);
     console.error('[cron] Error stack:', error instanceof Error ? error.stack : 'No stack trace');
