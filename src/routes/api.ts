@@ -307,31 +307,6 @@ adminApi.post('/gateway/restart', async (c) => {
   }
 });
 
-// GET /api/admin/processes - List all processes (for debugging)
-adminApi.get('/processes', async (c) => {
-  const sandbox = c.get('sandbox');
-
-  try {
-    const processes = await sandbox.listProcesses();
-
-    // Extract safe info for each process
-    const processInfo = processes.map((proc) => ({
-      id: proc.id,
-      command: proc.command.substring(0, 200), // Truncate long commands
-      status: proc.status,
-      exitCode: proc.exitCode,
-    }));
-
-    return c.json({
-      total: processes.length,
-      processes: processInfo,
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    return c.json({ error: errorMessage }, 500);
-  }
-});
-
 // Mount admin API routes under /admin
 api.route('/admin', adminApi);
 

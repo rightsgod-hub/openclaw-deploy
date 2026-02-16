@@ -20,8 +20,6 @@
  * - SLACK_BOT_TOKEN + SLACK_APP_TOKEN: Slack tokens
  */
 
-// R2 config structure fixed: .last-sync moved to root, openclaw.json in openclaw/
-
 import { Hono } from 'hono';
 import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
 
@@ -312,7 +310,9 @@ app.all('*', async (c) => {
       return containerResponse;
     }
 
-    console.log('[WS] Got container WebSocket, setting up interception');
+    if (debugLogs) {
+      console.log('[WS] Got container WebSocket, setting up interception');
+    }
 
     // Create a WebSocket pair for the client
     const [clientWs, serverWs] = Object.values(new WebSocketPair());
@@ -321,9 +321,11 @@ app.all('*', async (c) => {
     serverWs.accept();
     containerWs.accept();
 
-    console.log('[WS] Both WebSockets accepted');
-    console.log('[WS] containerWs.readyState:', containerWs.readyState);
-    console.log('[WS] serverWs.readyState:', serverWs.readyState);
+    if (debugLogs) {
+      console.log('[WS] Both WebSockets accepted');
+      console.log('[WS] containerWs.readyState:', containerWs.readyState);
+      console.log('[WS] serverWs.readyState:', serverWs.readyState);
+    }
 
     // Relay messages from client to container
     serverWs.addEventListener('message', (event) => {
@@ -336,34 +338,8 @@ app.all('*', async (c) => {
       }
       if (containerWs.readyState === WebSocket.OPEN) {
         containerWs.send(event.data);
-      } else {
-        // Container is not open - log error and notify client
-        console.error('[WS] Container not open, cannot send message. readyState:', containerWs.readyState);
-        console.error('[WS] Target URL:', url.pathname);
-
-        // Try to parse client message to extract ID for error response
-        let messageId = 'unknown';
-        if (typeof event.data === 'string') {
-          try {
-            const parsed = JSON.parse(event.data);
-            if (parsed.id) messageId = parsed.id;
-          } catch (e) {
-            // Not JSON, ignore
-          }
-        }
-
-        // Send error response to client
-        if (serverWs.readyState === WebSocket.OPEN) {
-          const errorResponse = JSON.stringify({
-            type: 'error',
-            id: messageId,
-            error: {
-              code: 'CONTAINER_DISCONNECTED',
-              message: 'Container WebSocket is not connected. The gateway may have restarted or is still booting.',
-            },
-          });
-          serverWs.send(errorResponse);
-        }
+      } else if (debugLogs) {
+        console.log('[WS] Container not open, readyState:', containerWs.readyState);
       }
     });
 
@@ -404,38 +380,32 @@ app.all('*', async (c) => {
 
       if (serverWs.readyState === WebSocket.OPEN) {
         serverWs.send(data);
-      } else {
-        // Server (client) is not open - cannot deliver message
-        console.error(
-          '[WS] Server (client) not open, cannot deliver message. readyState:',
-          serverWs.readyState,
-          'data preview:',
-          typeof data === 'string' ? data.slice(0, 100) : '(binary)',
-        );
+      } else if (debugLogs) {
+        console.log('[WS] Server not open, readyState:', serverWs.readyState);
       }
     });
 
     // Handle close events
     serverWs.addEventListener('close', (event) => {
-      console.log('[WS] Client closed:', event.code, event.reason);
-      // 1006 is an internal code and cannot be used in close()
-      const closeCode = event.code === 1006 ? 1001 : event.code;
-      containerWs.close(closeCode, event.reason);
+      if (debugLogs) {
+        console.log('[WS] Client closed:', event.code, event.reason);
+      }
+      containerWs.close(event.code, event.reason);
     });
 
     containerWs.addEventListener('close', (event) => {
-      console.warn('[WS] Container closed:', event.code, event.reason);
+      if (debugLogs) {
+        console.log('[WS] Container closed:', event.code, event.reason);
+      }
       // Transform the close reason (truncate to 123 bytes max for WebSocket spec)
       let reason = transformErrorMessage(event.reason, url.host);
       if (reason.length > 123) {
         reason = reason.slice(0, 120) + '...';
       }
-      console.warn('[WS] Transformed close reason:', reason);
-
-      // 1006 is an internal code and cannot be used in close()
-      // Convert to 1001 (Going Away) for abnormal closures
-      const closeCode = event.code === 1006 ? 1001 : event.code;
-      serverWs.close(closeCode, reason);
+      if (debugLogs) {
+        console.log('[WS] Transformed close reason:', reason);
+      }
+      serverWs.close(event.code, reason);
     });
 
     // Handle errors
@@ -483,59 +453,22 @@ async function scheduled(
   env: MoltbotEnv,
   _ctx: ExecutionContext,
 ): Promise<void> {
-  try {
-    console.log('[cron] Cron triggered');
-    const options = buildSandboxOptions(env);
-    const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
+  const options = buildSandboxOptions(env);
+  const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
-    let gatewayProcess = await findExistingMoltbotProcess(sandbox);
-    if (!gatewayProcess) {
-      console.log('[cron] Gateway not running, attempting to start...');
-      try {
-        await ensureMoltbotGateway(sandbox, env);
-        console.log(
-          '[cron] Gateway started successfully, skipping sync this round (waiting for gateway to initialize)',
-        );
-        return;
-      } catch (startError) {
-        console.error('[cron] Failed to start gateway:', startError);
-        return;
-      }
-    }
+  const gatewayProcess = await findExistingMoltbotProcess(sandbox);
+  if (!gatewayProcess) {
+    console.log('[cron] Gateway not running yet, skipping sync');
+    return;
+  }
 
-    // 新規追加: 同期前にgatewayが実際に応答可能か検証
-    // DOリセット中、プロセスは存在するがportは未ready
-    // これによりcronがDOリセットを再誘発するのを防ぐ
-    try {
-      console.log('[cron] Verifying gateway responsiveness...');
-      await gatewayProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
-      console.log('[cron] Gateway is responsive, proceeding with sync');
-    } catch (e) {
-      console.log('[cron] Gateway exists but port not ready (likely DO resetting), skipping sync');
-      return;
-    }
+  console.log('[cron] Starting backup sync to R2...');
+  const result = await syncToR2(sandbox, env);
 
-    console.log('[cron] Starting backup sync to R2...');
-    const result = await syncToR2(sandbox, env);
-
-    if (result.success) {
-      console.log('[cron] Backup sync completed successfully at', result.lastSync);
-    } else {
-      console.error('[cron] Backup sync failed:', result.error, result.details || '');
-    }
-
-    // Clean up completed/failed zombie processes every cron cycle
-    try {
-      const cleaned = await sandbox.cleanupCompletedProcesses();
-      if (cleaned > 0) {
-        console.log(`[cron] Cleaned up ${cleaned} completed processes`);
-      }
-    } catch (cleanupErr) {
-      console.error('[cron] Process cleanup failed:', cleanupErr);
-    }
-  } catch (error) {
-    console.error('[cron] Fatal error:', error);
-    console.error('[cron] Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+  if (result.success) {
+    console.log('[cron] Backup sync completed successfully at', result.lastSync);
+  } else {
+    console.error('[cron] Backup sync failed:', result.error, result.details || '');
   }
 }
 

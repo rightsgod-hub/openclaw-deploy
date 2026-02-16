@@ -6,13 +6,11 @@ import {
   restartGateway,
   getStorageStatus,
   triggerSync,
-  listProcessesInfo,
   AuthError,
   type PendingDevice,
   type PairedDevice,
   type DeviceListResponse,
   type StorageStatusResponse,
-  type ProcessInfo,
 } from '../api';
 import './AdminPage.css';
 
@@ -56,10 +54,6 @@ export default function AdminPage() {
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [restartInProgress, setRestartInProgress] = useState(false);
   const [syncInProgress, setSyncInProgress] = useState(false);
-  const [processInfo, setProcessInfo] = useState<{ total: number; processes: ProcessInfo[] } | null>(
-    null,
-  );
-  const [processInfoLoading, setProcessInfoLoading] = useState(false);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -178,19 +172,6 @@ export default function AdminPage() {
     }
   };
 
-  const handleLoadProcessInfo = async () => {
-    setProcessInfoLoading(true);
-    try {
-      const result = await listProcessesInfo();
-      setProcessInfo({ total: result.total, processes: result.processes });
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load process info');
-    } finally {
-      setProcessInfoLoading(false);
-    }
-  };
-
   return (
     <div className="devices-page">
       {error && (
@@ -251,61 +232,19 @@ export default function AdminPage() {
       <section className="devices-section gateway-section">
         <div className="section-header">
           <h2>Gateway Controls</h2>
-          <div className="header-actions">
-            <button
-              className="btn btn-secondary"
-              onClick={handleLoadProcessInfo}
-              disabled={processInfoLoading}
-            >
-              {processInfoLoading && <ButtonSpinner />}
-              {processInfoLoading ? 'Loading...' : 'Show Processes'}
-            </button>
-            <button
-              className="btn btn-danger"
-              onClick={handleRestartGateway}
-              disabled={restartInProgress}
-            >
-              {restartInProgress && <ButtonSpinner />}
-              {restartInProgress ? 'Restarting...' : 'Restart Gateway'}
-            </button>
-          </div>
+          <button
+            className="btn btn-danger"
+            onClick={handleRestartGateway}
+            disabled={restartInProgress}
+          >
+            {restartInProgress && <ButtonSpinner />}
+            {restartInProgress ? 'Restarting...' : 'Restart Gateway'}
+          </button>
         </div>
         <p className="hint">
-          <strong>Show Processes:</strong> Display current container processes for debugging.
-          <br />
-          <strong>Restart Gateway:</strong> Restart the gateway to apply configuration changes or
-          recover from errors.
+          Restart the gateway to apply configuration changes or recover from errors. All connected
+          clients will be temporarily disconnected.
         </p>
-
-        {processInfo && (
-          <div className="process-info" style={{ marginTop: '1rem' }}>
-            <h3>Container Processes ({processInfo.total} total)</h3>
-            <div
-              style={{
-                maxHeight: '400px',
-                overflow: 'auto',
-                background: '#f5f5f5',
-                padding: '1rem',
-                borderRadius: '4px',
-                fontSize: '12px',
-                fontFamily: 'monospace',
-              }}
-            >
-              {processInfo.processes.map((proc) => (
-                <div
-                  key={proc.id}
-                  style={{ marginBottom: '0.5rem', borderBottom: '1px solid #ddd' }}
-                >
-                  <div>
-                    <strong>ID:</strong> {proc.id} | <strong>Status:</strong> {proc.status}
-                    {proc.exitCode !== undefined && ` | Exit: ${proc.exitCode}`}
-                  </div>
-                  <div style={{ color: '#666' }}>{proc.command}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </section>
 
       {loading ? (
