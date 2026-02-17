@@ -137,3 +137,20 @@ export async function triggerSync(): Promise<SyncResponse> {
     method: 'POST',
   });
 }
+
+export interface ProcessInfo {
+  id: string;
+  command: string;
+  status: string;
+  exitCode?: number;
+}
+
+export interface ListProcessesResponse {
+  total: number;
+  processes: ProcessInfo[];
+  error?: string;
+}
+
+export async function listProcessesInfo(): Promise<ListProcessesResponse> {
+  return apiRequest<ListProcessesResponse>('/processes');
+}

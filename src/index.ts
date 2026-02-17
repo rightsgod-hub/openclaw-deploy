@@ -281,13 +281,10 @@ app.all('*', async (c) => {
 
   // Proxy to Moltbot with WebSocket message interception
   if (isWebSocketRequest) {
-    const debugLogs = c.env.DEBUG_ROUTES === 'true';
     const redactedSearch = redactSensitiveParams(url);
 
     console.log('[WS] Proxying WebSocket connection to Moltbot');
-    if (debugLogs) {
-      console.log('[WS] URL:', url.pathname + redactedSearch);
-    }
+    console.log('[WS] URL:', url.pathname + redactedSearch);
 
     // Inject gateway token into WebSocket request if not already present.
     // CF Access redirects strip query params, so authenticated users lose ?token=.
@@ -310,9 +307,7 @@ app.all('*', async (c) => {
       return containerResponse;
     }
 
-    if (debugLogs) {
-      console.log('[WS] Got container WebSocket, setting up interception');
-    }
+    console.log('[WS] Got container WebSocket, setting up interception');
 
     // Create a WebSocket pair for the client
     const [clientWs, serverWs] = Object.values(new WebSocketPair());
@@ -321,91 +316,89 @@ app.all('*', async (c) => {
     serverWs.accept();
     containerWs.accept();
 
-    if (debugLogs) {
-      console.log('[WS] Both WebSockets accepted');
-      console.log('[WS] containerWs.readyState:', containerWs.readyState);
-      console.log('[WS] serverWs.readyState:', serverWs.readyState);
-    }
+    console.log('[WS] Both WebSockets accepted');
+    console.log('[WS] containerWs.readyState:', containerWs.readyState);
+    console.log('[WS] serverWs.readyState:', serverWs.readyState);
 
     // Relay messages from client to container
     serverWs.addEventListener('message', (event) => {
-      if (debugLogs) {
-        console.log(
-          '[WS] Client -> Container:',
-          typeof event.data,
-          typeof event.data === 'string' ? event.data.slice(0, 200) : '(binary)',
-        );
-      }
+      console.log(
+        '[WS] Client -> Container:',
+        typeof event.data,
+        typeof event.data === 'string' ? event.data.slice(0, 200) : '(binary)',
+      );
       if (containerWs.readyState === WebSocket.OPEN) {
         containerWs.send(event.data);
-      } else if (debugLogs) {
-        console.log('[WS] Container not open, readyState:', containerWs.readyState);
+      } else {
+        console.error('[WS] Container not open, cannot send message. readyState:', containerWs.readyState);
+        let messageId = 'unknown';
+        if (typeof event.data === 'string') {
+          try {
+            const parsed = JSON.parse(event.data);
+            if (parsed.id) messageId = parsed.id;
+          } catch (e) { /* Not JSON */ }
+        }
+        if (serverWs.readyState === WebSocket.OPEN) {
+          serverWs.send(JSON.stringify({
+            type: 'error',
+            id: messageId,
+            error: { code: 'CONTAINER_DISCONNECTED', message: 'Container WebSocket is not connected.' },
+          }));
+        }
       }
     });
 
     // Relay messages from container to client, with error transformation
     containerWs.addEventListener('message', (event) => {
-      if (debugLogs) {
-        console.log(
-          '[WS] Container -> Client (raw):',
-          typeof event.data,
-          typeof event.data === 'string' ? event.data.slice(0, 500) : '(binary)',
-        );
-      }
+      console.log(
+        '[WS] Container -> Client (raw):',
+        typeof event.data,
+        typeof event.data === 'string' ? event.data.slice(0, 500) : '(binary)',
+      );
       let data = event.data;
 
       // Try to intercept and transform error messages
       if (typeof data === 'string') {
         try {
           const parsed = JSON.parse(data);
-          if (debugLogs) {
-            console.log('[WS] Parsed JSON, has error.message:', !!parsed.error?.message);
-          }
+          console.log('[WS] Parsed JSON, has error.message:', !!parsed.error?.message);
           if (parsed.error?.message) {
-            if (debugLogs) {
-              console.log('[WS] Original error.message:', parsed.error.message);
-            }
+            console.log('[WS] Original error.message:', parsed.error.message);
             parsed.error.message = transformErrorMessage(parsed.error.message, url.host);
-            if (debugLogs) {
-              console.log('[WS] Transformed error.message:', parsed.error.message);
-            }
+            console.log('[WS] Transformed error.message:', parsed.error.message);
             data = JSON.stringify(parsed);
           }
         } catch (e) {
-          if (debugLogs) {
-            console.log('[WS] Not JSON or parse error:', e);
-          }
+          console.log('[WS] Not JSON or parse error:', e);
         }
       }
 
       if (serverWs.readyState === WebSocket.OPEN) {
         serverWs.send(data);
-      } else if (debugLogs) {
+      } else {
         console.log('[WS] Server not open, readyState:', serverWs.readyState);
       }
     });
 
     // Handle close events
     serverWs.addEventListener('close', (event) => {
-      if (debugLogs) {
-        console.log('[WS] Client closed:', event.code, event.reason);
-      }
-      containerWs.close(event.code, event.reason);
+      console.warn('[WS] Client closed:', event.code, event.reason);
+      // 1006 is an internal code and cannot be used in close()
+      const closeCode = event.code === 1006 ? 1001 : event.code;
+      containerWs.close(closeCode, event.reason);
     });
 
     containerWs.addEventListener('close', (event) => {
-      if (debugLogs) {
-        console.log('[WS] Container closed:', event.code, event.reason);
-      }
+      console.warn('[WS] Container closed:', event.code, event.reason);
       // Transform the close reason (truncate to 123 bytes max for WebSocket spec)
       let reason = transformErrorMessage(event.reason, url.host);
       if (reason.length > 123) {
         reason = reason.slice(0, 120) + '...';
       }
-      if (debugLogs) {
-        console.log('[WS] Transformed close reason:', reason);
-      }
-      serverWs.close(event.code, reason);
+      console.warn('[WS] Transformed close reason:', reason);
+      // 1006 is an internal code and cannot be used in close()
+      const closeCode = event.code === 1006 ? 1001 : event.code;
+      serverWs.close(closeCode, reason);
     });
 
     // Handle errors
@@ -419,9 +412,7 @@ app.all('*', async (c) => {
       serverWs.close(1011, 'Container error');
     });
 
-    if (debugLogs) {
-      console.log('[WS] Returning intercepted WebSocket response');
-    }
+    console.log('[WS] Returning intercepted WebSocket response');
     return new Response(null, {
       status: 101,
       webSocket: clientWs,
@@ -453,22 +444,43 @@ async function scheduled(
   env: MoltbotEnv,
   _ctx: ExecutionContext,
 ): Promise<void> {
-  const options = buildSandboxOptions(env);
-  const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
+  try {
+    console.log('[cron] Cron triggered');
+    const options = buildSandboxOptions(env);
+    const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
-  const gatewayProcess = await findExistingMoltbotProcess(sandbox);
-  if (!gatewayProcess) {
-    console.log('[cron] Gateway not running yet, skipping sync');
-    return;
-  }
+    let gatewayProcess = await findExistingMoltbotProcess(sandbox);
+    if (!gatewayProcess) {
+      console.log('[cron] Gateway not running, attempting to start...');
+      try {
+        await ensureMoltbotGateway(sandbox, env);
+        console.log('[cron] Gateway started successfully, skipping sync this round');
+        return;
+      } catch (startError) {
+        console.error('[cron] Failed to start gateway:', startError);
+        return;
+      }
+    }
 
-  console.log('[cron] Starting backup sync to R2...');
-  const result = await syncToR2(sandbox, env);
+    try {
+      console.log('[cron] Verifying gateway responsiveness...');
+      await gatewayProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
+      console.log('[cron] Gateway is responsive, proceeding with sync');
+    } catch (e) {
+      console.log('[cron] Gateway exists but port not ready, skipping sync');
+      return;
+    }
 
-  if (result.success) {
-    console.log('[cron] Backup sync completed successfully at', result.lastSync);
-  } else {
-    console.error('[cron] Backup sync failed:', result.error, result.details || '');
+    console.log('[cron] Starting backup sync to R2...');
+    const result = await syncToR2(sandbox, env);
+
+    if (result.success) {
+      console.log('[cron] Backup sync completed successfully at', result.lastSync);
+    } else {
+      console.error('[cron] Backup sync failed:', result.error, result.details || '');
+    }
+  } catch (error) {
+    console.error('[cron] Fatal error:', error);
   }
 }
 
