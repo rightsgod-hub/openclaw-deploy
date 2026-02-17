@@ -129,11 +129,11 @@ describe('mountR2Storage', () => {
 
   describe('error handling', () => {
     it('returns false when mountBucket throws and mount check fails', async () => {
-      const { sandbox, mountBucketMock, startProcessMock } = createMockSandbox({ mounted: false });
+      const { sandbox, mountBucketMock, execMock } = createMockSandbox({ mounted: false });
       mountBucketMock.mockRejectedValue(new Error('Mount failed'));
-      startProcessMock
-        .mockResolvedValueOnce(createMockProcess(''))
-        .mockResolvedValueOnce(createMockProcess(''));
+      execMock
+        .mockResolvedValueOnce({ exitCode: 1, stdout: '', stderr: '', command: '', durationMs: 0 })
+        .mockResolvedValueOnce({ exitCode: 1, stdout: '', stderr: '', command: '', durationMs: 0 });
 
       const env = createMockEnvWithR2();
 
@@ -144,10 +144,10 @@ describe('mountR2Storage', () => {
     });
 
     it('returns true if mount fails but check shows it is actually mounted', async () => {
-      const { sandbox, mountBucketMock, startProcessMock } = createMockSandbox();
-      startProcessMock
-        .mockResolvedValueOnce(createMockProcess(''))
-        .mockResolvedValueOnce(createMockProcess('s3fs on /data/moltbot type fuse.s3fs\n'));
+      const { sandbox, mountBucketMock, execMock } = createMockSandbox();
+      execMock
+        .mockResolvedValueOnce({ exitCode: 1, stdout: '', stderr: '', command: '', durationMs: 0 })
+        .mockResolvedValueOnce({ exitCode: 0, stdout: 's3fs on /data/moltbot type fuse.s3fs\n', stderr: '', command: '', durationMs: 0 });
 
       mountBucketMock.mockRejectedValue(new Error('Transient error'));
 
@@ -162,22 +162,22 @@ describe('mountR2Storage', () => {
 
   describe('mount cache', () => {
     it('skips process spawning on second call after successful mount', async () => {
-      const { sandbox, startProcessMock } = createMockSandbox({ mounted: true });
+      const { sandbox, execMock } = createMockSandbox({ mounted: true });
       const env = createMockEnvWithR2();
 
-      // First call - checks mount via process
+      // First call - checks mount via exec
       const result1 = await mountR2Storage(sandbox, env);
       expect(result1).toBe(true);
-      expect(startProcessMock).toHaveBeenCalledTimes(1);
+      expect(execMock).toHaveBeenCalledTimes(1);
 
-      // Second call - should return immediately without spawning a process
+      // Second call - should return immediately without calling exec
       const result2 = await mountR2Storage(sandbox, env);
       expect(result2).toBe(true);
-      expect(startProcessMock).toHaveBeenCalledTimes(1); // still 1, no new process
+      expect(execMock).toHaveBeenCalledTimes(1); // still 1, no new exec call
     });
 
     it('skips process spawning after successful mountBucket', async () => {
-      const { sandbox, startProcessMock, mountBucketMock } = createMockSandbox({ mounted: false });
+      const { sandbox, execMock, mountBucketMock } = createMockSandbox({ mounted: false });
       const env = createMockEnvWithR2();
 
       // First call - mounts via mountBucket
@@ -188,24 +188,24 @@ describe('mountR2Storage', () => {
       // Second call - should return immediately
       const result2 = await mountR2Storage(sandbox, env);
       expect(result2).toBe(true);
-      expect(startProcessMock).toHaveBeenCalledTimes(1); // only the initial isR2Mounted check
+      expect(execMock).toHaveBeenCalledTimes(1); // only the initial isR2Mounted check
       expect(mountBucketMock).toHaveBeenCalledTimes(1); // not called again
     });
 
     it('resets cache with resetR2MountCache', async () => {
-      const { sandbox, startProcessMock } = createMockSandbox({ mounted: true });
+      const { sandbox, execMock } = createMockSandbox({ mounted: true });
       const env = createMockEnvWithR2();
 
       // First call
       await mountR2Storage(sandbox, env);
-      expect(startProcessMock).toHaveBeenCalledTimes(1);
+      expect(execMock).toHaveBeenCalledTimes(1);
 
       // Reset cache
       resetR2MountCache();
 
       // Third call - should check again
       await mountR2Storage(sandbox, env);
-      expect(startProcessMock).toHaveBeenCalledTimes(2);
+      expect(execMock).toHaveBeenCalledTimes(2);
     });
   });
 });

@@ -18,18 +18,9 @@ export function resetR2MountCache(): void {
  */
 async function isR2Mounted(sandbox: Sandbox): Promise<boolean> {
   try {
-    const proc = await sandbox.startProcess(`mount | grep "s3fs on ${R2_MOUNT_PATH}"`);
-    // Wait for the command to complete
-    let attempts = 0;
-    while (proc.status === 'running' && attempts < 10) {
-      // eslint-disable-next-line no-await-in-loop -- intentional sequential polling
-      await new Promise((r) => setTimeout(r, 200));
-      attempts++;
-    }
-    const logs = await proc.getLogs();
-    // If stdout has content, the mount exists
-    const mounted = !!(logs.stdout && logs.stdout.includes('s3fs'));
-    console.log('isR2Mounted check:', mounted, 'stdout:', logs.stdout?.slice(0, 100));
+    const result = await sandbox.exec(`mount | grep "s3fs on ${R2_MOUNT_PATH}"`, { timeout: 5000 });
+    const mounted = !!(result.stdout && result.stdout.includes('s3fs'));
+    console.log('isR2Mounted check:', mounted, 'stdout:', result.stdout?.slice(0, 100));
     return mounted;
   } catch (err) {
     console.log('isR2Mounted error:', err);

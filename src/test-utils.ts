@@ -48,6 +48,7 @@ export interface MockSandbox {
   sandbox: Sandbox;
   mountBucketMock: ReturnType<typeof vi.fn>;
   startProcessMock: ReturnType<typeof vi.fn>;
+  execMock: ReturnType<typeof vi.fn>;
   listProcessesMock: ReturnType<typeof vi.fn>;
   containerFetchMock: ReturnType<typeof vi.fn>;
 }
@@ -76,15 +77,25 @@ export function createMockSandbox(
         : createMockProcess(''),
     );
 
+  // exec() returns ExecResult directly (no process record)
+  const execMock = vi
+    .fn()
+    .mockResolvedValue(
+      options.mounted
+        ? { exitCode: 0, stdout: 's3fs on /data/moltbot type fuse.s3fs (rw,nosuid,nodev,relatime,user_id=0,group_id=0)\n', stderr: '', command: '', durationMs: 0 }
+        : { exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 },
+    );
+
   const sandbox = {
     mountBucket: mountBucketMock,
     listProcesses: listProcessesMock,
     startProcess: startProcessMock,
+    exec: execMock,
     containerFetch: containerFetchMock,
     wsConnect: vi.fn(),
   } as unknown as Sandbox;
 
-  return { sandbox, mountBucketMock, startProcessMock, listProcessesMock, containerFetchMock };
+  return { sandbox, mountBucketMock, startProcessMock, execMock, listProcessesMock, containerFetchMock };
 }
 
 /**
