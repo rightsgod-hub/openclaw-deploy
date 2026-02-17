@@ -31,16 +31,12 @@ debug.get('/version', async (c) => {
   const sandbox = c.get('sandbox');
   try {
     // Get OpenClaw version
-    const versionProcess = await sandbox.startProcess('openclaw --version');
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const versionLogs = await versionProcess.getLogs();
-    const moltbotVersion = (versionLogs.stdout || versionLogs.stderr || '').trim();
+    const versionResult = await sandbox.exec('openclaw --version', { timeout: 5000 });
+    const moltbotVersion = (versionResult.stdout || versionResult.stderr || '').trim();
 
     // Get node version
-    const nodeProcess = await sandbox.startProcess('node --version');
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const nodeLogs = await nodeProcess.getLogs();
-    const nodeVersion = (nodeLogs.stdout || '').trim();
+    const nodeResult = await sandbox.exec('node --version', { timeout: 5000 });
+    const nodeVersion = (nodeResult.stdout || '').trim();
 
     return c.json({
       moltbot_version: moltbotVersion,
@@ -148,25 +144,13 @@ debug.get('/cli', async (c) => {
   const cmd = c.req.query('cmd') || 'openclaw --help';
 
   try {
-    const proc = await sandbox.startProcess(cmd);
-
-    // Wait longer for command to complete
-    let attempts = 0;
-    while (attempts < 30) {
-      // eslint-disable-next-line no-await-in-loop -- intentional sequential polling
-      await new Promise((r) => setTimeout(r, 500));
-      if (proc.status !== 'running') break;
-      attempts++;
-    }
-
-    const logs = await proc.getLogs();
+    const result = await sandbox.exec(cmd, { timeout: 15000 });
     return c.json({
       command: cmd,
-      status: proc.status,
-      exitCode: proc.exitCode,
-      attempts,
-      stdout: logs.stdout || '',
-      stderr: logs.stderr || '',
+      status: result.exitCode === 0 ? 'completed' : 'failed',
+      exitCode: result.exitCode,
+      stdout: result.stdout || '',
+      stderr: result.stderr || '',
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -384,19 +368,9 @@ debug.get('/container-config', async (c) => {
   const sandbox = c.get('sandbox');
 
   try {
-    const proc = await sandbox.startProcess('cat /root/.openclaw/openclaw.json');
-
-    let attempts = 0;
-    while (attempts < 10) {
-      // eslint-disable-next-line no-await-in-loop -- intentional sequential polling
-      await new Promise((r) => setTimeout(r, 200));
-      if (proc.status !== 'running') break;
-      attempts++;
-    }
-
-    const logs = await proc.getLogs();
-    const stdout = logs.stdout || '';
-    const stderr = logs.stderr || '';
+    const result = await sandbox.exec('cat /root/.openclaw/openclaw.json', { timeout: 5000 });
+    const stdout = result.stdout || '';
+    const stderr = result.stderr || '';
 
     let config = null;
     try {
@@ -406,8 +380,8 @@ debug.get('/container-config', async (c) => {
     }
 
     return c.json({
-      status: proc.status,
-      exitCode: proc.exitCode,
+      status: result.exitCode === 0 ? 'completed' : 'failed',
+      exitCode: result.exitCode,
       config,
       raw: config ? undefined : stdout,
       stderr,

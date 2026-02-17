@@ -6,7 +6,6 @@ import {
   findExistingMoltbotProcess,
   mountR2Storage,
   syncToR2,
-  waitForProcess,
 } from '../gateway';
 import { R2_MOUNT_PATH } from '../config';
 
@@ -41,14 +40,12 @@ adminApi.get('/devices', async (c) => {
     // Must specify --url and --token (OpenClaw v2026.2.3 requires explicit credentials with --url)
     const token = c.env.MOLTBOT_GATEWAY_TOKEN;
     const tokenArg = token ? ` --token ${token}` : '';
-    const proc = await sandbox.startProcess(
+    const result = await sandbox.exec(
       `openclaw devices list --json --url ws://localhost:18789${tokenArg}`,
+      { timeout: CLI_TIMEOUT_MS },
     );
-    await waitForProcess(proc, CLI_TIMEOUT_MS);
-
-    const logs = await proc.getLogs();
-    const stdout = logs.stdout || '';
-    const stderr = logs.stderr || '';
+    const stdout = result.stdout || '';
+    const stderr = result.stderr || '';
 
     // Try to parse JSON output
     try {
@@ -97,17 +94,15 @@ adminApi.post('/devices/:requestId/approve', async (c) => {
     // Run OpenClaw CLI to approve the device
     const token = c.env.MOLTBOT_GATEWAY_TOKEN;
     const tokenArg = token ? ` --token ${token}` : '';
-    const proc = await sandbox.startProcess(
+    const result = await sandbox.exec(
       `openclaw devices approve ${requestId} --url ws://localhost:18789${tokenArg}`,
+      { timeout: CLI_TIMEOUT_MS },
     );
-    await waitForProcess(proc, CLI_TIMEOUT_MS);
-
-    const logs = await proc.getLogs();
-    const stdout = logs.stdout || '';
-    const stderr = logs.stderr || '';
+    const stdout = result.stdout || '';
+    const stderr = result.stderr || '';
 
     // Check for success indicators (case-insensitive, CLI outputs "Approved ...")
-    const success = stdout.toLowerCase().includes('approved') || proc.exitCode === 0;
+    const success = stdout.toLowerCase().includes('approved') || result.exitCode === 0;
 
     return c.json({
       success,
@@ -133,13 +128,11 @@ adminApi.post('/devices/approve-all', async (c) => {
     // First, get the list of pending devices
     const token = c.env.MOLTBOT_GATEWAY_TOKEN;
     const tokenArg = token ? ` --token ${token}` : '';
-    const listProc = await sandbox.startProcess(
+    const listResult = await sandbox.exec(
       `openclaw devices list --json --url ws://localhost:18789${tokenArg}`,
+      { timeout: CLI_TIMEOUT_MS },
     );
-    await waitForProcess(listProc, CLI_TIMEOUT_MS);
-
-    const listLogs = await listProc.getLogs();
-    const stdout = listLogs.stdout || '';
+    const stdout = listResult.stdout || '';
 
     // Parse pending devices
     let pending: Array<{ requestId: string }> = [];
@@ -163,16 +156,12 @@ adminApi.post('/devices/approve-all', async (c) => {
     for (const device of pending) {
       try {
         // eslint-disable-next-line no-await-in-loop -- sequential device approval required
-        const approveProc = await sandbox.startProcess(
+        const approveResult = await sandbox.exec(
           `openclaw devices approve ${device.requestId} --url ws://localhost:18789${tokenArg}`,
+          { timeout: CLI_TIMEOUT_MS },
         );
-        // eslint-disable-next-line no-await-in-loop
-        await waitForProcess(approveProc, CLI_TIMEOUT_MS);
-
-        // eslint-disable-next-line no-await-in-loop
-        const approveLogs = await approveProc.getLogs();
         const success =
-          approveLogs.stdout?.toLowerCase().includes('approved') || approveProc.exitCode === 0;
+          approveResult.stdout?.toLowerCase().includes('approved') || approveResult.exitCode === 0;
 
         results.push({ requestId: device.requestId, success });
       } catch (err) {
@@ -220,12 +209,11 @@ adminApi.get('/storage', async (c) => {
       await mountR2Storage(sandbox, c.env);
 
       // Check for sync marker file
-      const proc = await sandbox.startProcess(
+      const result = await sandbox.exec(
         `cat ${R2_MOUNT_PATH}/.last-sync 2>/dev/null || echo ""`,
+        { timeout: 5000 },
       );
-      await waitForProcess(proc, 5000);
-      const logs = await proc.getLogs();
-      const timestamp = logs.stdout?.trim();
+      const timestamp = result.stdout?.trim();
       if (timestamp && timestamp !== '') {
         lastSync = timestamp;
       }
@@ -329,16 +317,14 @@ adminApi.delete('/devices/:deviceId', async (c) => {
     const tokenArg = token ? ` --token ${token}` : '';
 
     // Try CLI removal first (in case a future OpenClaw version adds it)
-    const proc = await sandbox.startProcess(
+    const result = await sandbox.exec(
       `openclaw devices remove ${deviceId} --url ws://localhost:18789${tokenArg} 2>&1`,
+      { timeout: CLI_TIMEOUT_MS },
     );
-    await waitForProcess(proc, CLI_TIMEOUT_MS);
-
-    const logs = await proc.getLogs();
-    const stdout = logs.stdout || '';
+    const stdout = result.stdout || '';
 
     // If CLI command succeeded, return success
-    if (proc.exitCode === 0 && !stdout.includes('unknown command') && !stdout.includes('Unknown command')) {
+    if (result.exitCode === 0 && !stdout.includes('unknown command') && !stdout.includes('Unknown command')) {
       return c.json({
         success: true,
         deviceId,
@@ -348,12 +334,11 @@ adminApi.delete('/devices/:deviceId', async (c) => {
 
     // Fallback: find and edit pairing data files directly
     // OpenClaw stores device data in JSON files under its config directory
-    const findProc = await sandbox.startProcess(
+    const findResult = await sandbox.exec(
       `grep -rl "${deviceId}" /root/.openclaw/ /home/*/.openclaw/ 2>/dev/null | head -10`,
+      { timeout: 10000 },
     );
-    await waitForProcess(findProc, 10000);
-    const findLogs = await findProc.getLogs();
-    const matchingFiles = (findLogs.stdout || '').trim().split('\n').filter(Boolean);
+    const matchingFiles = (findResult.stdout || '').trim().split('\n').filter(Boolean);
 
     if (matchingFiles.length === 0) {
       return c.json(
@@ -371,7 +356,7 @@ adminApi.delete('/devices/:deviceId', async (c) => {
       if (!file.endsWith('.json')) continue;
 
       // eslint-disable-next-line no-await-in-loop
-      const editProc = await sandbox.startProcess(
+      const editResult = await sandbox.exec(
         `node -e "
 const fs = require('fs');
 try {
@@ -399,13 +384,10 @@ try {
   console.log('ERROR: ' + e.message);
 }
 "`,
+        { timeout: 10000 },
       );
-      // eslint-disable-next-line no-await-in-loop
-      await waitForProcess(editProc, 10000);
-      // eslint-disable-next-line no-await-in-loop
-      const editLogs = await editProc.getLogs();
 
-      if ((editLogs.stdout || '').includes('REMOVED')) {
+      if ((editResult.stdout || '').includes('REMOVED')) {
         return c.json({
           success: true,
           deviceId,
