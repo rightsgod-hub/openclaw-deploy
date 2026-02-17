@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mountR2Storage } from './r2';
+import { mountR2Storage, resetR2MountCache } from './r2';
 import {
   createMockEnv,
   createMockEnvWithR2,
@@ -11,6 +11,7 @@ import {
 describe('mountR2Storage', () => {
   beforeEach(() => {
     suppressConsole();
+    resetR2MountCache();
   });
 
   describe('credential validation', () => {
@@ -156,6 +157,55 @@ describe('mountR2Storage', () => {
 
       expect(result).toBe(true);
       expect(console.log).toHaveBeenCalledWith('R2 bucket is mounted despite error');
+    });
+  });
+
+  describe('mount cache', () => {
+    it('skips process spawning on second call after successful mount', async () => {
+      const { sandbox, startProcessMock } = createMockSandbox({ mounted: true });
+      const env = createMockEnvWithR2();
+
+      // First call - checks mount via process
+      const result1 = await mountR2Storage(sandbox, env);
+      expect(result1).toBe(true);
+      expect(startProcessMock).toHaveBeenCalledTimes(1);
+
+      // Second call - should return immediately without spawning a process
+      const result2 = await mountR2Storage(sandbox, env);
+      expect(result2).toBe(true);
+      expect(startProcessMock).toHaveBeenCalledTimes(1); // still 1, no new process
+    });
+
+    it('skips process spawning after successful mountBucket', async () => {
+      const { sandbox, startProcessMock, mountBucketMock } = createMockSandbox({ mounted: false });
+      const env = createMockEnvWithR2();
+
+      // First call - mounts via mountBucket
+      const result1 = await mountR2Storage(sandbox, env);
+      expect(result1).toBe(true);
+      expect(mountBucketMock).toHaveBeenCalledTimes(1);
+
+      // Second call - should return immediately
+      const result2 = await mountR2Storage(sandbox, env);
+      expect(result2).toBe(true);
+      expect(startProcessMock).toHaveBeenCalledTimes(1); // only the initial isR2Mounted check
+      expect(mountBucketMock).toHaveBeenCalledTimes(1); // not called again
+    });
+
+    it('resets cache with resetR2MountCache', async () => {
+      const { sandbox, startProcessMock } = createMockSandbox({ mounted: true });
+      const env = createMockEnvWithR2();
+
+      // First call
+      await mountR2Storage(sandbox, env);
+      expect(startProcessMock).toHaveBeenCalledTimes(1);
+
+      // Reset cache
+      resetR2MountCache();
+
+      // Third call - should check again
+      await mountR2Storage(sandbox, env);
+      expect(startProcessMock).toHaveBeenCalledTimes(2);
     });
   });
 });

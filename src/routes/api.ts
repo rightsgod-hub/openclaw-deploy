@@ -307,6 +307,127 @@ adminApi.post('/gateway/restart', async (c) => {
   }
 });
 
+// DELETE /api/admin/devices/:deviceId - Remove a paired device
+adminApi.delete('/devices/:deviceId', async (c) => {
+  const sandbox = c.get('sandbox');
+  const deviceId = c.req.param('deviceId');
+
+  if (!deviceId) {
+    return c.json({ error: 'deviceId is required' }, 400);
+  }
+
+  // Validate deviceId to prevent command injection (alphanumeric, hyphens, underscores only)
+  if (!/^[\w-]+$/.test(deviceId)) {
+    return c.json({ error: 'Invalid deviceId format' }, 400);
+  }
+
+  try {
+    // Ensure moltbot is running first
+    await ensureMoltbotGateway(sandbox, c.env);
+
+    const token = c.env.MOLTBOT_GATEWAY_TOKEN;
+    const tokenArg = token ? ` --token ${token}` : '';
+
+    // Try CLI removal first (in case a future OpenClaw version adds it)
+    const proc = await sandbox.startProcess(
+      `openclaw devices remove ${deviceId} --url ws://localhost:18789${tokenArg} 2>&1`,
+    );
+    await waitForProcess(proc, CLI_TIMEOUT_MS);
+
+    const logs = await proc.getLogs();
+    const stdout = logs.stdout || '';
+
+    // If CLI command succeeded, return success
+    if (proc.exitCode === 0 && !stdout.includes('unknown command') && !stdout.includes('Unknown command')) {
+      return c.json({
+        success: true,
+        deviceId,
+        message: 'Device removed via CLI',
+      });
+    }
+
+    // Fallback: find and edit pairing data files directly
+    // OpenClaw stores device data in JSON files under its config directory
+    const findProc = await sandbox.startProcess(
+      `grep -rl "${deviceId}" /root/.openclaw/ /home/*/.openclaw/ 2>/dev/null | head -10`,
+    );
+    await waitForProcess(findProc, 10000);
+    const findLogs = await findProc.getLogs();
+    const matchingFiles = (findLogs.stdout || '').trim().split('\n').filter(Boolean);
+
+    if (matchingFiles.length === 0) {
+      return c.json(
+        {
+          success: false,
+          deviceId,
+          error: 'Device not found in pairing data',
+        },
+        404,
+      );
+    }
+
+    // Use Node.js to safely parse and modify JSON files
+    for (const file of matchingFiles) {
+      if (!file.endsWith('.json')) continue;
+
+      // eslint-disable-next-line no-await-in-loop
+      const editProc = await sandbox.startProcess(
+        `node -e "
+const fs = require('fs');
+try {
+  const data = JSON.parse(fs.readFileSync('${file}', 'utf8'));
+  let modified = false;
+  for (const key of Object.keys(data)) {
+    if (Array.isArray(data[key])) {
+      const before = data[key].length;
+      data[key] = data[key].filter(d => d.deviceId !== '${deviceId}' && d.id !== '${deviceId}');
+      if (data[key].length < before) modified = true;
+    } else if (typeof data[key] === 'object' && data[key] !== null) {
+      if ('${deviceId}' in data[key]) {
+        delete data[key]['${deviceId}'];
+        modified = true;
+      }
+    }
+  }
+  if (modified) {
+    fs.writeFileSync('${file}', JSON.stringify(data, null, 2));
+    console.log('REMOVED');
+  } else {
+    console.log('NOT_FOUND');
+  }
+} catch (e) {
+  console.log('ERROR: ' + e.message);
+}
+"`,
+      );
+      // eslint-disable-next-line no-await-in-loop
+      await waitForProcess(editProc, 10000);
+      // eslint-disable-next-line no-await-in-loop
+      const editLogs = await editProc.getLogs();
+
+      if ((editLogs.stdout || '').includes('REMOVED')) {
+        return c.json({
+          success: true,
+          deviceId,
+          message: 'Device pairing data removed',
+        });
+      }
+    }
+
+    return c.json(
+      {
+        success: false,
+        deviceId,
+        error: 'Could not remove device from pairing data',
+      },
+      500,
+    );
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: errorMessage }, 500);
+  }
+});
+
 // GET /api/admin/processes - List all processes (for debugging)
 adminApi.get('/processes', async (c) => {
   const sandbox = c.get('sandbox');

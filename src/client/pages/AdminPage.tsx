@@ -3,6 +3,7 @@ import {
   listDevices,
   approveDevice,
   approveAllDevices,
+  removeDevice,
   restartGateway,
   getStorageStatus,
   triggerSync,
@@ -129,6 +130,26 @@ export default function AdminPage() {
       await fetchDevices();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to approve devices');
+    } finally {
+      setActionInProgress(null);
+    }
+  };
+
+  const handleRemoveDevice = async (deviceId: string) => {
+    if (!confirm(`Remove device "${deviceId}"? This will unpair the device.`)) {
+      return;
+    }
+
+    setActionInProgress(deviceId);
+    try {
+      const result = await removeDevice(deviceId);
+      if (result.success) {
+        await fetchDevices();
+      } else {
+        setError(result.error || 'Failed to remove device');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove device');
     } finally {
       setActionInProgress(null);
     }
@@ -458,6 +479,16 @@ export default function AdminPage() {
                           {formatTimeAgo(device.approvedAtMs)}
                         </span>
                       </div>
+                    </div>
+                    <div className="device-actions">
+                      <button
+                        className="btn btn-danger btn-sm"
+                        onClick={() => handleRemoveDevice(device.deviceId)}
+                        disabled={actionInProgress !== null}
+                      >
+                        {actionInProgress === device.deviceId && <ButtonSpinner />}
+                        {actionInProgress === device.deviceId ? 'Removing...' : 'Remove'}
+                      </button>
                     </div>
                   </div>
                 ))}

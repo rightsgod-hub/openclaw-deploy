@@ -154,3 +154,16 @@ export interface ListProcessesResponse {
 export async function listProcessesInfo(): Promise<ListProcessesResponse> {
   return apiRequest<ListProcessesResponse>('/processes');
 }
+
+export interface RemoveDeviceResponse {
+  success: boolean;
+  deviceId: string;
+  message?: string;
+  error?: string;
+}
+
+export async function removeDevice(deviceId: string): Promise<RemoveDeviceResponse> {
+  return apiRequest<RemoveDeviceResponse>(`/devices/${deviceId}`, {
+    method: 'DELETE',
+  });
+}

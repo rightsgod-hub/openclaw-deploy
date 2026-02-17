@@ -2,6 +2,17 @@ import type { Sandbox } from '@cloudflare/sandbox';
 import type { MoltbotEnv } from '../types';
 import { R2_MOUNT_PATH, getR2BucketName } from '../config';
 
+// Module-level cache: once R2 mount is confirmed, skip process spawning on subsequent calls.
+// This flag resets naturally when the Durable Object resets (module reloads).
+let r2MountConfirmed = false;
+
+/**
+ * Reset the R2 mount cache (for testing only)
+ */
+export function resetR2MountCache(): void {
+  r2MountConfirmed = false;
+}
+
 /**
  * Check if R2 is already mounted by looking at the mount table
  */
@@ -34,6 +45,11 @@ async function isR2Mounted(sandbox: Sandbox): Promise<boolean> {
  * @returns true if mounted successfully, false otherwise
  */
 export async function mountR2Storage(sandbox: Sandbox, env: MoltbotEnv): Promise<boolean> {
+  // Return immediately if mount was already confirmed - no process spawning needed
+  if (r2MountConfirmed) {
+    return true;
+  }
+
   // Skip if R2 credentials are not configured
   if (!env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY || !env.CF_ACCOUNT_ID) {
     console.log(
@@ -45,6 +61,7 @@ export async function mountR2Storage(sandbox: Sandbox, env: MoltbotEnv): Promise
   // Check if already mounted first - this avoids errors and is faster
   if (await isR2Mounted(sandbox)) {
     console.log('R2 bucket already mounted at', R2_MOUNT_PATH);
+    r2MountConfirmed = true;
     return true;
   }
 
@@ -60,6 +77,7 @@ export async function mountR2Storage(sandbox: Sandbox, env: MoltbotEnv): Promise
       },
     });
     console.log('R2 bucket mounted successfully - moltbot data will persist across sessions');
+    r2MountConfirmed = true;
     return true;
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
@@ -68,6 +86,7 @@ export async function mountR2Storage(sandbox: Sandbox, env: MoltbotEnv): Promise
     // Check again if it's mounted - the error might be misleading
     if (await isR2Mounted(sandbox)) {
       console.log('R2 bucket is mounted despite error');
+      r2MountConfirmed = true;
       return true;
     }
 
