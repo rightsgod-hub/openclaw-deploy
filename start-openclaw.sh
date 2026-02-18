@@ -258,9 +258,15 @@ if (modelList.length > 0 && (apiKey || hasVertexCreds)) {
 
         if (gwProvider.includes('google') && useVertexAI) {
             // Vertex AI (enterprise Google Cloud)
+            // gemini-3-* models are global-only; other models use regional endpoint
             const region = process.env.GCP_REGION || 'us-central1';
             const projectId = process.env.GCP_PROJECT_ID;
-            baseUrl = 'https://' + region + '-aiplatform.googleapis.com/v1/projects/' + projectId + '/locations/' + region + '/publishers/google';
+            const isGlobalModel = modelId.startsWith('gemini-3') || region === 'global';
+            if (isGlobalModel) {
+                baseUrl = 'https://aiplatform.googleapis.com/v1/projects/' + projectId + '/locations/global/publishers/google';
+            } else {
+                baseUrl = 'https://' + region + '-aiplatform.googleapis.com/v1/projects/' + projectId + '/locations/' + region + '/publishers/google';
+            }
             console.log('Using Vertex AI endpoint: ' + baseUrl);
         } else if (gwProvider.includes('google')) {
             // Direct Google API (bypasses AI Gateway for Gemini/Gemma)
