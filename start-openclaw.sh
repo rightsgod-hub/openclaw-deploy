@@ -208,7 +208,8 @@ const accountId = process.env.CF_AI_GATEWAY_ACCOUNT_ID;
 const gatewayId = process.env.CF_AI_GATEWAY_GATEWAY_ID;
 const apiKey = process.env.CLOUDFLARE_AI_GATEWAY_API_KEY;
 
-if (modelList.length > 0 && apiKey) {
+const hasVertexCreds = process.env.USE_VERTEX_AI === 'true' && process.env.GCP_PROJECT_ID && process.env.GCP_SERVICE_ACCOUNT_KEY;
+if (modelList.length > 0 && (apiKey || hasVertexCreds)) {
     config.models = config.models || {};
     config.models.providers = config.models.providers || {};
 
