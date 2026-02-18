@@ -258,9 +258,12 @@ if (modelList.length > 0 && (apiKey || hasVertexCreds)) {
                 }],
             };
 
-            // Authentication: Vertex AI uses service account, others use API key
+            // Authentication: Vertex AI uses Authorization: Bearer token (fetched at startup)
+            // Other providers use apiKey via x-goog-api-key or equivalent header
             if (useVertexAI && gwProvider.includes('google')) {
-                providerConfig.serviceAccountKey = process.env.GCP_SERVICE_ACCOUNT_KEY;
+                if (process.env.GCP_ACCESS_TOKEN) {
+                    providerConfig.headers = { 'Authorization': 'Bearer ' + process.env.GCP_ACCESS_TOKEN };
+                }
             } else {
                 providerConfig.apiKey = apiKey;
             }
@@ -338,6 +341,33 @@ echo "Gateway will be available on port 18789"
 
 rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
 rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
+
+# Fetch GCP access token for Vertex AI (Authorization: Bearer)
+if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ] && [ "$USE_VERTEX_AI" = "true" ]; then
+    echo "Fetching GCP access token for Vertex AI..."
+    GCP_ACCESS_TOKEN=$(node -e "
+const crypto = require('crypto');
+const https = require('https');
+const key = JSON.parse(process.env.GCP_SERVICE_ACCOUNT_KEY);
+function b64u(s){return Buffer.from(s).toString('base64').replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');}
+const now=Math.floor(Date.now()/1000);
+const h=b64u(JSON.stringify({alg:'RS256',typ:'JWT'}));
+const c=b64u(JSON.stringify({iss:key.client_email,scope:'https://www.googleapis.com/auth/cloud-platform',aud:'https://oauth2.googleapis.com/token',exp:now+3600,iat:now}));
+const sign=crypto.createSign('RSA-SHA256');
+sign.update(h+'.'+c);
+const sig=sign.sign(key.private_key,'base64').replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
+const jwt=h+'.'+c+'.'+sig;
+const body='grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion='+jwt;
+const req=https.request({hostname:'oauth2.googleapis.com',path:'/token',method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Content-Length':body.length}},res=>{let d='';res.on('data',c=>d+=c);res.on('end',()=>{const r=JSON.parse(d);if(r.access_token){process.stdout.write(r.access_token);}else{process.stderr.write('token error: '+d);}});});
+req.write(body);req.end();
+" 2>/dev/null)
+    if [ -n "$GCP_ACCESS_TOKEN" ]; then
+        export GCP_ACCESS_TOKEN
+        echo "GCP access token obtained successfully"
+    else
+        echo "WARNING: Failed to obtain GCP access token"
+    fi
+fi
 
 echo "Dev mode: ${OPENCLAW_DEV_MODE:-false}"
 
