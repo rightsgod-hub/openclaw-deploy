@@ -143,7 +143,7 @@ fi
 # ============================================================
 # PATCH CONFIG (channels, gateway auth, trusted proxies)
 # ============================================================
-# GCP SERVICE ACCOUNT KEY FILE (for gcloud CLI / BQ SDK)
+# GCP SERVICE ACCOUNT KEY FILE (for BQ SDK / Application Default Credentials)
 # ============================================================
 if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ]; then
     echo "Writing GCP service account key file..."
@@ -151,17 +151,7 @@ if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ]; then
     echo "$GCP_SERVICE_ACCOUNT_KEY" > "$GCP_KEY_FILE"
     chmod 600 "$GCP_KEY_FILE"
     export GOOGLE_APPLICATION_CREDENTIALS="$GCP_KEY_FILE"
-
-    # Activate service account for gcloud CLI
-    gcloud auth activate-service-account --key-file="$GCP_KEY_FILE" --quiet 2>/dev/null || \
-        echo "WARNING: gcloud auth activate-service-account failed (gcloud may not be installed)"
-
-    # Set default project
-    if [ -n "$GCP_PROJECT_ID" ]; then
-        gcloud config set project "$GCP_PROJECT_ID" --quiet 2>/dev/null || true
-    fi
-
-    echo "GCP authentication configured (key file: $GCP_KEY_FILE)"
+    echo "GCP authentication configured (GOOGLE_APPLICATION_CREDENTIALS=$GCP_KEY_FILE)"
 fi
 
 # ============================================================
