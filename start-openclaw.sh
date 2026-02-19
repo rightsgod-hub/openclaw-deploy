@@ -380,15 +380,75 @@ EOFPATCH
 echo "Starting OpenClaw Gateway..."
 echo "Gateway will be available on port 18789"
 
-rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
-rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
-
 echo "Dev mode: ${OPENCLAW_DEV_MODE:-false}"
 
-if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
-    echo "Starting gateway with token auth..."
-    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan --token "$OPENCLAW_GATEWAY_TOKEN"
+# Token refresh loop helper: update config with new token and restart gateway
+refresh_and_restart() {
+    local new_token
+    new_token=$(fetch_gcp_token)
+    if [ -z "$new_token" ]; then
+        echo "WARNING: GCP token refresh failed, gateway continues with expired token"
+        return
+    fi
+    export GCP_ACCESS_TOKEN="$new_token"
+    echo "GCP token refreshed at $(date)"
+
+    # Update openclaw.json with new token
+    node -e "
+const fs = require('fs');
+const configPath = '/root/.openclaw/openclaw.json';
+try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const token = process.env.GCP_ACCESS_TOKEN;
+    if (config.models && config.models.providers) {
+        Object.values(config.models.providers).forEach(function(p) {
+            if (p.headers && p.headers.Authorization) p.headers.Authorization = 'Bearer ' + token;
+            if (p.apiKey) p.apiKey = token;
+        });
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        console.log('Config updated with refreshed GCP token');
+    }
+} catch(e) {
+    console.error('Failed to update config:', e.message);
+}
+"
+}
+
+start_gateway() {
+    rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
+    rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
+    if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
+        openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan --token "$OPENCLAW_GATEWAY_TOKEN" &
+    else
+        openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan &
+    fi
+    echo $!
+}
+
+if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ] && [ "$USE_VERTEX_AI" = "true" ]; then
+    # Vertex AI mode: refresh GCP token every 50 minutes
+    GATEWAY_PID=$(start_gateway)
+    echo "Gateway started with PID $GATEWAY_PID (token refresh loop active)"
+
+    while true; do
+        sleep 3000
+        echo "Token refresh cycle starting at $(date)..."
+        refresh_and_restart
+        echo "Restarting gateway with refreshed token..."
+        kill "$GATEWAY_PID" 2>/dev/null
+        wait "$GATEWAY_PID" 2>/dev/null
+        GATEWAY_PID=$(start_gateway)
+        echo "Gateway restarted with PID $GATEWAY_PID"
+    done
 else
-    echo "Starting gateway with device pairing (no token)..."
-    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan
+    # No Vertex AI: start gateway directly (no token refresh needed)
+    rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
+    rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
+    if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
+        echo "Starting gateway with token auth..."
+        exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan --token "$OPENCLAW_GATEWAY_TOKEN"
+    else
+        echo "Starting gateway with device pairing (no token)..."
+        exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan
+    fi
 fi
