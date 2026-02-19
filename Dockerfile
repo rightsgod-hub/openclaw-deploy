@@ -17,6 +17,18 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && node --version \
     && npm --version
 
+# Install Google Cloud SDK (gcloud CLI) and Python data science libraries
+RUN apt-get update && apt-get install -y \
+    python3 python3-pip python3-venv \
+    apt-transport-https gnupg \
+    && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
+       | tee /etc/apt/sources.list.d/google-cloud-sdk.list \
+    && curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+       | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
+    && apt-get update && apt-get install -y google-cloud-cli \
+    && pip3 install --break-system-packages pandas numpy google-cloud-bigquery google-cloud-storage \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Install pnpm globally
 RUN npm install -g pnpm
 
@@ -32,7 +44,7 @@ RUN mkdir -p /root/.openclaw \
     && mkdir -p /root/clawd/skills
 
 # Copy startup script
-# Build cache bust: 2026-02-19-v30-vertex-ai-fix
+# Build cache bust: 2026-02-20-v31-discord-gcloud
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 

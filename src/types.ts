@@ -28,6 +28,7 @@ export interface MoltbotEnv {
   TELEGRAM_DM_POLICY?: string;
   DISCORD_BOT_TOKEN?: string;
   DISCORD_DM_POLICY?: string;
+  DISCORD_DM_ALLOW_FROM?: string;
   SLACK_BOT_TOKEN?: string;
   SLACK_APP_TOKEN?: string;
   // Cloudflare Access configuration for admin routes
