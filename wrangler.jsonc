@@ -8,13 +8,6 @@
   "observability": {
     "enabled": true,
   },
-  // Non-secret environment variables
-  "vars": {
-    "DEV_MODE": "true",
-    "DEBUG_ROUTES": "true",
-    "DISCORD_DM_POLICY": "open",
-    "DISCORD_DM_ALLOW_FROM": "907994221515014204"
-  },
   // Static assets for admin UI (built by vite)
   "assets": {
     "directory": "./dist/client",

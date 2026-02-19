@@ -17,11 +17,6 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && node --version \
     && npm --version
 
-# Install Python and data science / BQ SDK libraries
-RUN apt-get update && apt-get install -y python3 python3-pip \
-    && pip3 install pandas numpy google-cloud-bigquery google-cloud-storage \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
 # Install pnpm globally
 RUN npm install -g pnpm
 
@@ -37,7 +32,7 @@ RUN mkdir -p /root/.openclaw \
     && mkdir -p /root/clawd/skills
 
 # Copy startup script
-# Build cache bust: 2026-02-20-v31-discord-gcloud
+# Build cache bust: 2026-02-19-v30-vertex-ai-fix
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 

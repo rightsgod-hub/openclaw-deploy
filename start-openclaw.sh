@@ -143,18 +143,6 @@ fi
 # ============================================================
 # PATCH CONFIG (channels, gateway auth, trusted proxies)
 # ============================================================
-# GCP SERVICE ACCOUNT KEY FILE (for BQ SDK / Application Default Credentials)
-# ============================================================
-if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ]; then
-    echo "Writing GCP service account key file..."
-    GCP_KEY_FILE="/root/.gcp-key.json"
-    echo "$GCP_SERVICE_ACCOUNT_KEY" > "$GCP_KEY_FILE"
-    chmod 600 "$GCP_KEY_FILE"
-    export GOOGLE_APPLICATION_CREDENTIALS="$GCP_KEY_FILE"
-    echo "GCP authentication configured (GOOGLE_APPLICATION_CREDENTIALS=$GCP_KEY_FILE)"
-fi
-
-# ============================================================
 # FETCH GCP ACCESS TOKEN (must be before patch so token is available)
 # ============================================================
 fetch_gcp_token() {
@@ -353,9 +341,7 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
 if (process.env.DISCORD_BOT_TOKEN) {
     const dmPolicy = process.env.DISCORD_DM_POLICY || 'pairing';
     const dm = { policy: dmPolicy };
-    if (process.env.DISCORD_DM_ALLOW_FROM) {
-        dm.allowFrom = process.env.DISCORD_DM_ALLOW_FROM.split(',');
-    } else if (dmPolicy === 'open') {
+    if (dmPolicy === 'open') {
         dm.allowFrom = ['*'];
     }
     config.channels.discord = {
