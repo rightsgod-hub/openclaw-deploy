@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y \
     && curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
        | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
     && apt-get update && apt-get install -y google-cloud-cli \
-    && pip3 install --break-system-packages pandas numpy google-cloud-bigquery google-cloud-storage \
+    && pip3 install pandas numpy google-cloud-bigquery google-cloud-storage \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install pnpm globally
