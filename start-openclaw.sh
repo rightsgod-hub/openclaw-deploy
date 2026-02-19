@@ -171,11 +171,6 @@ if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ]; then
     export GOOGLE_APPLICATION_CREDENTIALS="$GCP_KEY_FILE"
     echo "GCP service account key written to $GCP_KEY_FILE"
 
-    # Activate gcloud in background (non-blocking)
-    if command -v gcloud >/dev/null 2>&1; then
-        (gcloud auth activate-service-account --key-file="$GCP_KEY_FILE" >/dev/null 2>&1 &)
-        echo "gcloud auth started in background"
-    fi
 fi
 
 # FETCH GCP ACCESS TOKEN (must be before patch so token is available)
