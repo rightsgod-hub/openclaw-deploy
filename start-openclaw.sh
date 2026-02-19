@@ -27,35 +27,23 @@ mkdir -p "$CONFIG_DIR"
 # ============================================================
 
 should_restore_from_r2() {
+    local WORKSPACE_DIR="/root/clawd"
+
+    # 1. ワークスペースに記憶ファイル（MEMORY.md）がない場合は、無条件で復元
+    if [ ! -f "$WORKSPACE_DIR/MEMORY.md" ]; then
+        echo "MEMORY.md not found in local workspace, forcing restore from R2"
+        return 0
+    fi
+
+    # 2. R2にバックアップがあるなら、基本的にそちらを優先
+    # （デプロイ直後はLOCAL_TIMEが新しくなってしまうため、タイムスタンプ比較は信頼できない）
     local R2_SYNC_FILE="$BACKUP_DIR/.last-sync"
-    local LOCAL_SYNC_FILE="$CONFIG_DIR/.last-sync"
-
-    if [ ! -f "$R2_SYNC_FILE" ]; then
-        echo "No R2 sync timestamp found, skipping restore"
-        return 1
-    fi
-
-    if [ ! -f "$LOCAL_SYNC_FILE" ]; then
-        echo "No local sync timestamp, will restore from R2"
+    if [ -f "$R2_SYNC_FILE" ]; then
+        echo "Found R2 backup, prioritizing R2 data to prevent deploy-overwrite"
         return 0
     fi
 
-    R2_TIME=$(cat "$R2_SYNC_FILE" 2>/dev/null)
-    LOCAL_TIME=$(cat "$LOCAL_SYNC_FILE" 2>/dev/null)
-
-    echo "R2 last sync: $R2_TIME"
-    echo "Local last sync: $LOCAL_TIME"
-
-    R2_EPOCH=$(date -d "$R2_TIME" +%s 2>/dev/null || echo "0")
-    LOCAL_EPOCH=$(date -d "$LOCAL_TIME" +%s 2>/dev/null || echo "0")
-
-    if [ "$R2_EPOCH" -gt "$LOCAL_EPOCH" ]; then
-        echo "R2 backup is newer, will restore"
-        return 0
-    else
-        echo "Local data is newer or same, skipping restore"
-        return 1
-    fi
+    return 1
 }
 
 # Check for backup data in new openclaw/ prefix first, then legacy clawdbot/ prefix
@@ -95,16 +83,18 @@ else
     echo "R2 not mounted, starting fresh"
 fi
 
-# Restore workspace from R2 backup if available (only if R2 is newer)
+# Restore workspace from R2 backup if available
+# CRITICAL: Always restore from R2 when data exists to prevent deploy-overwrite
 # This includes IDENTITY.md, USER.md, MEMORY.md, memory/, and assets/
 WORKSPACE_DIR="/root/clawd"
 if [ -d "$BACKUP_DIR/workspace" ] && [ "$(ls -A $BACKUP_DIR/workspace 2>/dev/null)" ]; then
-    if should_restore_from_r2; then
-        echo "Restoring workspace from $BACKUP_DIR/workspace..."
-        mkdir -p "$WORKSPACE_DIR"
-        cp -a "$BACKUP_DIR/workspace/." "$WORKSPACE_DIR/"
-        echo "Restored workspace from R2 backup"
-    fi
+    # タイムスタンプに関わらず、R2にデータがあるならそちらを正とする
+    echo "Restoring workspace from R2 backup to protect against deploy-overwrite..."
+    mkdir -p "$WORKSPACE_DIR"
+    # デプロイされたばかりのテンプレートを消去して、R2の記憶で上書きする
+    rm -rf "${WORKSPACE_DIR:?}"/*
+    cp -a "$BACKUP_DIR/workspace/." "$WORKSPACE_DIR/"
+    echo "Restored workspace from R2 backup"
 fi
 
 # Restore skills from R2 backup if available (only if R2 is newer)
