@@ -8,6 +8,10 @@
   "observability": {
     "enabled": true,
   },
+  "vars": {
+    "DISCORD_DM_POLICY": "open",
+    "DISCORD_DM_ALLOW_FROM": "*"
+  },
   // Static assets for admin UI (built by vite)
   "assets": {
     "directory": "./dist/client",

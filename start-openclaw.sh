@@ -6,7 +6,8 @@
 # 3. Patches config for features onboard doesn't cover (channels, gateway auth)
 # 4. Starts the gateway
 
-set -e
+# set -e removed: single command failure must not kill the entire script
+# Each section handles its own errors with || true or fallback logic
 
 if pgrep -f "openclaw gateway" > /dev/null 2>&1; then
     echo "OpenClaw gateway is already running, exiting."
@@ -19,6 +20,19 @@ BACKUP_DIR="/data/moltbot"
 
 echo "Config directory: $CONFIG_DIR"
 echo "Backup directory: $BACKUP_DIR"
+
+# Wait for R2 mount (max 30 seconds)
+echo "Waiting for R2 mount at $BACKUP_DIR..."
+R2_WAIT=0
+while ! mountpoint -q "$BACKUP_DIR" 2>/dev/null && [ $R2_WAIT -lt 30 ]; do
+    sleep 1
+    R2_WAIT=$((R2_WAIT + 1))
+done
+if mountpoint -q "$BACKUP_DIR" 2>/dev/null; then
+    echo "R2 mounted after ${R2_WAIT}s"
+else
+    echo "WARNING: R2 not available after 30s, continuing without backup"
+fi
 
 mkdir -p "$CONFIG_DIR"
 
@@ -133,7 +147,12 @@ if [ ! -f "$CONFIG_FILE" ]; then
         --gateway-bind lan \
         --skip-channels \
         --skip-skills \
-        --skip-health
+        --skip-health || {
+        echo "WARNING: openclaw onboard failed, creating minimal config for gateway startup"
+        cat > "$CONFIG_FILE" << 'MINCONFIG'
+{"gateway":{"port":18789,"mode":"local","trustedProxies":["10.1.0.0"]}}
+MINCONFIG
+    }
 
     echo "Onboard completed"
 else
@@ -143,13 +162,29 @@ fi
 # ============================================================
 # PATCH CONFIG (channels, gateway auth, trusted proxies)
 # ============================================================
+# WRITE GCP KEY FILE (for GOOGLE_APPLICATION_CREDENTIALS / BQ SDK)
+# ============================================================
+if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ]; then
+    GCP_KEY_FILE="/root/.gcp-service-account.json"
+    echo "$GCP_SERVICE_ACCOUNT_KEY" > "$GCP_KEY_FILE"
+    chmod 600 "$GCP_KEY_FILE"
+    export GOOGLE_APPLICATION_CREDENTIALS="$GCP_KEY_FILE"
+    echo "GCP service account key written to $GCP_KEY_FILE"
+
+    # Activate gcloud in background (non-blocking)
+    if command -v gcloud >/dev/null 2>&1; then
+        (gcloud auth activate-service-account --key-file="$GCP_KEY_FILE" >/dev/null 2>&1 &)
+        echo "gcloud auth started in background"
+    fi
+fi
+
 # FETCH GCP ACCESS TOKEN (must be before patch so token is available)
 # ============================================================
 fetch_gcp_token() {
     node -e "
 const crypto = require('crypto');
 const https = require('https');
-const key = JSON.parse(process.env.GCP_SERVICE_ACCOUNT_KEY);
+let key; try { key = JSON.parse(process.env.GCP_SERVICE_ACCOUNT_KEY || '{}'); } catch(e) { process.stderr.write('Invalid GCP_SERVICE_ACCOUNT_KEY JSON: ' + e.message + '\\n'); process.exit(1); }
 function b64u(s){return Buffer.from(s).toString('base64').replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');}
 const now=Math.floor(Date.now()/1000);
 const h=b64u(JSON.stringify({alg:'RS256',typ:'JWT'}));
@@ -166,7 +201,7 @@ req.write(body);req.end();
 
 if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ] && [ "$USE_VERTEX_AI" = "true" ]; then
     echo "Fetching GCP access token for Vertex AI..."
-    GCP_ACCESS_TOKEN=$(fetch_gcp_token)
+    GCP_ACCESS_TOKEN=$(fetch_gcp_token) || true
     if [ -n "$GCP_ACCESS_TOKEN" ]; then
         export GCP_ACCESS_TOKEN
         echo "GCP access token obtained successfully"
@@ -341,7 +376,9 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
 if (process.env.DISCORD_BOT_TOKEN) {
     const dmPolicy = process.env.DISCORD_DM_POLICY || 'pairing';
     const dm = { policy: dmPolicy };
-    if (dmPolicy === 'open') {
+    if (process.env.DISCORD_DM_ALLOW_FROM) {
+        dm.allowFrom = process.env.DISCORD_DM_ALLOW_FROM.split(',');
+    } else if (dmPolicy === 'open') {
         dm.allowFrom = ['*'];
     }
     config.channels.discord = {
