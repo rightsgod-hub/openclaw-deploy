@@ -448,19 +448,27 @@ start_gateway() {
 }
 
 if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ] && [ "$USE_VERTEX_AI" = "true" ]; then
-    # Vertex AI mode: refresh GCP token every 50 minutes
+    # Vertex AI token refresh: real-time based (handles container hibernation)
+    # - Check interval: sleep 300 (5 min)
+    # - Refresh threshold: 3000s (50 min) since last token generation
+    # - On hibernation wake: 5-min sleep completes, date +%s detects staleness,
+    #   token refreshes immediately (max 5 min delay)
     GATEWAY_PID=$(start_gateway)
-    echo "Gateway started with PID $GATEWAY_PID (token refresh loop active)"
+    TOKEN_GENERATED_AT=$(date +%s)
+    echo "Gateway started with PID $GATEWAY_PID (token refresh: 5-min check, 50-min threshold)"
 
     while true; do
-        sleep 3000
-        echo "Token refresh cycle starting at $(date)..."
-        refresh_and_restart
-        echo "Restarting gateway with refreshed token..."
-        kill "$GATEWAY_PID" 2>/dev/null
-        wait "$GATEWAY_PID" 2>/dev/null
-        GATEWAY_PID=$(start_gateway)
-        echo "Gateway restarted with PID $GATEWAY_PID"
+        sleep 300
+        CURRENT_TIME=$(date +%s)
+        if [ $(( $CURRENT_TIME - $TOKEN_GENERATED_AT )) -ge 3000 ]; then
+            echo "Stale token detected (elapsed: $(( $CURRENT_TIME - $TOKEN_GENERATED_AT ))s), refreshing..."
+            refresh_and_restart
+            kill "$GATEWAY_PID" 2>/dev/null
+            wait "$GATEWAY_PID" 2>/dev/null
+            GATEWAY_PID=$(start_gateway)
+            TOKEN_GENERATED_AT=$CURRENT_TIME
+            echo "Token refreshed, gateway PID $GATEWAY_PID at $(date)"
+        fi
     done
 else
     # No Vertex AI: start gateway directly (no token refresh needed)
