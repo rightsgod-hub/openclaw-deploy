@@ -463,11 +463,15 @@ if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ] && [ "$USE_VERTEX_AI" = "true" ]; then
         if [ $(( $CURRENT_TIME - $TOKEN_GENERATED_AT )) -ge 3000 ]; then
             echo "Stale token detected (elapsed: $(( $CURRENT_TIME - $TOKEN_GENERATED_AT ))s), refreshing..."
             refresh_and_restart
-            kill "$GATEWAY_PID" 2>/dev/null
-            wait "$GATEWAY_PID" 2>/dev/null
-            GATEWAY_PID=$(start_gateway)
+            # Hot-reload token via config.apply (kill doesn't work in CF Container sandbox)
+            # refresh_and_restart() already updated openclaw.json; config.apply reloads from file
+            if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
+                openclaw gateway call config.apply \
+                    --url ws://localhost:18789 \
+                    --token "$OPENCLAW_GATEWAY_TOKEN" 2>&1 | head -3 || true
+            fi
             TOKEN_GENERATED_AT=$CURRENT_TIME
-            echo "Token refreshed, gateway PID $GATEWAY_PID at $(date)"
+            echo "Token refreshed and config.applied at $(date)"
         fi
     done
 else
