@@ -468,7 +468,7 @@ if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ] && [ "$USE_VERTEX_AI" = "true" ]; then
             if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
                 openclaw gateway call config.apply \
                     --url ws://localhost:18789 \
-                    --token "$OPENCLAW_GATEWAY_TOKEN" 2>&1 | head -3 || true
+                    --token "$OPENCLAW_GATEWAY_TOKEN" </dev/null 2>&1 | head -3 || true
             fi
             TOKEN_GENERATED_AT=$CURRENT_TIME
             echo "Token refreshed and config.applied at $(date)"
