@@ -55,10 +55,10 @@ try {
 " "$NEW_TOKEN"
 
 # --- config.apply でgatewayメモリ更新 ---
-if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
+if [ -n "$MOLTBOT_GATEWAY_TOKEN" ]; then
     openclaw gateway call config.apply \
         --url ws://localhost:18789 \
-        --token "$OPENCLAW_GATEWAY_TOKEN" </dev/null 2>&1 | head -3 || true
+        --token "$MOLTBOT_GATEWAY_TOKEN" </dev/null 2>&1 | head -3 || true
 fi
 
 echo "GCP token refreshed at $(date)"
