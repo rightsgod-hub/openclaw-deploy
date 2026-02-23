@@ -39,6 +39,10 @@ RUN mkdir -p /root/.openclaw \
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
+# Copy GCP token refresh script (called by Workers cron trigger)
+COPY refresh-gcp-token.sh /usr/local/bin/refresh-gcp-token.sh
+RUN chmod +x /usr/local/bin/refresh-gcp-token.sh
+
 # Copy custom skills
 COPY skills/ /root/clawd/skills/
 
