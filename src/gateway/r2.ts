@@ -49,13 +49,6 @@ export async function mountR2Storage(sandbox: Sandbox, env: MoltbotEnv): Promise
     return false;
   }
 
-  // Check if already mounted first - this avoids errors and is faster
-  if (await isR2Mounted(sandbox)) {
-    console.log('R2 bucket already mounted at', R2_MOUNT_PATH);
-    r2MountConfirmed = true;
-    return true;
-  }
-
   const bucketName = getR2BucketName(env);
   try {
     console.log('Mounting R2 bucket', bucketName, 'at', R2_MOUNT_PATH);
@@ -72,17 +65,15 @@ export async function mountR2Storage(sandbox: Sandbox, env: MoltbotEnv): Promise
     return true;
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
-    console.log('R2 mount error:', errorMessage);
-
-    // Check again if it's mounted - the error might be misleading
-    if (await isR2Mounted(sandbox)) {
-      console.log('R2 bucket is mounted despite error');
+    // If already mounted, treat as success without calling exec
+    const errLower = errorMessage.toLowerCase();
+    if (errLower.includes('already') || (errLower.includes('mount') && errLower.includes('exist'))) {
+      console.log('R2 bucket already mounted (detected from error):', errorMessage);
       r2MountConfirmed = true;
       return true;
     }
-
     // Don't fail if mounting fails - moltbot can still run without persistent storage
-    console.error('Failed to mount R2 bucket:', err);
+    console.error('Failed to mount R2 bucket:', errorMessage);
     return false;
   }
 }
