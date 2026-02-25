@@ -4,6 +4,10 @@ import { MOLTBOT_PORT, STARTUP_TIMEOUT_MS } from '../config';
 import { buildEnvVars } from './env';
 import { mountR2Storage } from './r2';
 
+// Module-level guard: prevents multiple concurrent gateway spawns.
+// If one request is already starting the gateway, others wait for it.
+let gatewayStartPromise: Promise<Process> | null = null;
+
 /**
  * Find an existing OpenClaw gateway process
  *
@@ -94,51 +98,66 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
     }
   }
 
-  // Start a new OpenClaw gateway
-  console.log('Starting new OpenClaw gateway...');
-  const envVars = buildEnvVars(env);
-  const command = '/usr/local/bin/start-openclaw.sh';
-
-  console.log('Starting process with command:', command);
-  console.log('Environment vars being passed:', Object.keys(envVars));
-
-  let process: Process;
-  try {
-    process = await sandbox.startProcess(command, {
-      env: Object.keys(envVars).length > 0 ? envVars : undefined,
-    });
-    console.log('Process started with id:', process.id, 'status:', process.status);
-  } catch (startErr) {
-    console.error('Failed to start process:', startErr);
-    throw startErr;
+  // Guard against concurrent spawns: if another request is already starting
+  // the gateway, wait for that attempt instead of spawning a duplicate.
+  if (gatewayStartPromise) {
+    console.log('Gateway startup already in progress, waiting for it...');
+    return gatewayStartPromise;
   }
 
-  // Wait for the gateway to be ready
-  try {
-    console.log('[Gateway] Waiting for OpenClaw gateway to be ready on port', MOLTBOT_PORT);
-    await process.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: STARTUP_TIMEOUT_MS });
-    console.log('[Gateway] OpenClaw gateway is ready!');
-
-    const logs = await process.getLogs();
-    if (logs.stdout) console.log('[Gateway] stdout:', logs.stdout);
-    if (logs.stderr) console.log('[Gateway] stderr:', logs.stderr);
-  } catch (e) {
-    console.error('[Gateway] waitForPort failed:', e);
+  // Start a new OpenClaw gateway (only one at a time)
+  gatewayStartPromise = (async () => {
     try {
-      const logs = await process.getLogs();
-      console.error('[Gateway] startup failed. Stderr:', logs.stderr);
-      console.error('[Gateway] startup failed. Stdout:', logs.stdout);
-      throw new Error(`OpenClaw gateway failed to start. Stderr: ${logs.stderr || '(empty)'}`, {
-        cause: e,
-      });
-    } catch (logErr) {
-      console.error('[Gateway] Failed to get logs:', logErr);
-      throw e;
+      console.log('Starting new OpenClaw gateway...');
+      const envVars = buildEnvVars(env);
+      const command = '/usr/local/bin/start-openclaw.sh';
+
+      console.log('Starting process with command:', command);
+      console.log('Environment vars being passed:', Object.keys(envVars));
+
+      let process: Process;
+      try {
+        process = await sandbox.startProcess(command, {
+          env: Object.keys(envVars).length > 0 ? envVars : undefined,
+        });
+        console.log('Process started with id:', process.id, 'status:', process.status);
+      } catch (startErr) {
+        console.error('Failed to start process:', startErr);
+        throw startErr;
+      }
+
+      // Wait for the gateway to be ready
+      try {
+        console.log('[Gateway] Waiting for OpenClaw gateway to be ready on port', MOLTBOT_PORT);
+        await process.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: STARTUP_TIMEOUT_MS });
+        console.log('[Gateway] OpenClaw gateway is ready!');
+
+        const logs = await process.getLogs();
+        if (logs.stdout) console.log('[Gateway] stdout:', logs.stdout);
+        if (logs.stderr) console.log('[Gateway] stderr:', logs.stderr);
+      } catch (e) {
+        console.error('[Gateway] waitForPort failed:', e);
+        try {
+          const logs = await process.getLogs();
+          console.error('[Gateway] startup failed. Stderr:', logs.stderr);
+          console.error('[Gateway] startup failed. Stdout:', logs.stdout);
+          throw new Error(`OpenClaw gateway failed to start. Stderr: ${logs.stderr || '(empty)'}`, {
+            cause: e,
+          });
+        } catch (logErr) {
+          console.error('[Gateway] Failed to get logs:', logErr);
+          throw e;
+        }
+      }
+
+      // Verify gateway is actually responding
+      console.log('[Gateway] Verifying gateway health...');
+
+      return process;
+    } finally {
+      gatewayStartPromise = null;
     }
-  }
+  })();
 
-  // Verify gateway is actually responding
-  console.log('[Gateway] Verifying gateway health...');
-
-  return process;
+  return gatewayStartPromise;
 }

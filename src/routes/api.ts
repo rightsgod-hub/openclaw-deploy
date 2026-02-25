@@ -410,6 +410,31 @@ try {
   }
 });
 
+// DELETE /api/admin/processes/all - Kill all running processes (emergency cleanup)
+adminApi.delete('/processes/all', async (c) => {
+  const sandbox = c.get('sandbox');
+  try {
+    const processes = await sandbox.listProcesses();
+    const killed: string[] = [];
+    const errors: string[] = [];
+
+    for (const proc of processes) {
+      if (proc.status === 'running' || proc.status === 'starting') {
+        try {
+          await proc.kill();
+          killed.push(proc.id);
+        } catch (e) {
+          errors.push(`${proc.id}: ${String(e)}`);
+        }
+      }
+    }
+
+    return c.json({ killed: killed.length, killedIds: killed, errors });
+  } catch (error) {
+    return c.json({ error: String(error) }, 500);
+  }
+});
+
 // GET /api/admin/processes - List all processes (for debugging)
 adminApi.get('/processes', async (c) => {
   const sandbox = c.get('sandbox');
