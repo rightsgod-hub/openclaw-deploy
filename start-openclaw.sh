@@ -393,8 +393,37 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
     };
 }
 
+// ---------------------------------------------------------
+// NEW: NODE AUTOGEN LOGIC (Self-healing from R2 restore issues)
+// ---------------------------------------------------------
+config.nodes = config.nodes || {};
+const nodeKeys = Object.keys(config.nodes);
+
+if (nodeKeys.length === 0) {
+    console.log('No nodes found in config, auto-generating default agent node...');
+    config.nodes = {
+        "agent-0": {
+            "name": "Moltbot",
+            "type": "agent",
+            "enabled": true,
+            "channels": ["discord"]
+        }
+    };
+}
+
+// Ensure Discord plugin is enabled if Discord channel exists
+if (config.channels.discord && config.channels.discord.enabled) {
+    config.plugins = config.plugins || {};
+    config.plugins.entries = config.plugins.entries || {};
+    config.plugins.entries.discord = { enabled: true };
+}
+
+// Fix ackReactionScope to prevent annoying bot reactions in DMs
+config.messages = config.messages || {};
+config.messages.ackReactionScope = "group-mentions";
+
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-console.log('Configuration patched successfully');
+console.log('Configuration patched successfully with node self-healing');
 EOFPATCH
 
 # ============================================================

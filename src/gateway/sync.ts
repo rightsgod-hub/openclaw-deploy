@@ -43,14 +43,15 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
 
   // Determine which config directory exists
   // Check new path first, fall back to legacy
-  // Use exit code (0 = exists) rather than stdout parsing to avoid log-flush races
   let configDir = '/root/.openclaw';
+  let configFilename = 'openclaw.json';
   try {
     const checkNew = await sandbox.exec('test -f /root/.openclaw/openclaw.json', { timeout: 5000 });
     if (checkNew.exitCode !== 0) {
       const checkLegacy = await sandbox.exec('test -f /root/.clawdbot/clawdbot.json', { timeout: 5000 });
       if (checkLegacy.exitCode === 0) {
         configDir = '/root/.clawdbot';
+        configFilename = 'clawdbot.json';
       } else {
         return {
           success: false,
@@ -59,6 +60,19 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
         };
       }
     }
+
+    // VALIDATION: Ensure the config is not "broken" (empty nodes) before syncing to R2
+    // This prevents a bad start-up state from overwriting a good R2 backup.
+    const validateCmd = `grep -q '"nodes"' ${configDir}/${configFilename}`;
+    const validation = await sandbox.exec(validateCmd, { timeout: 5000 });
+    if (validation.exitCode !== 0) {
+      return {
+        success: false,
+        error: 'Sync aborted: config file is incomplete',
+        details: `Config file ${configFilename} is missing node definitions. Backup aborted to protect R2.`,
+      };
+    }
+
   } catch (err) {
     return {
       success: false,
