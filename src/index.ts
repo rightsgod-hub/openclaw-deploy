@@ -471,24 +471,6 @@ async function scheduled(
       return;
     }
 
-    // Refresh GCP access token if Vertex AI is configured
-    if (env.USE_VERTEX_AI === 'true' && env.GCP_SERVICE_ACCOUNT_KEY) {
-      try {
-        console.log('[cron] Refreshing GCP access token...');
-        const refreshResult = await sandbox.exec(
-          'bash /usr/local/bin/refresh-gcp-token.sh',
-          { timeout: 30000 },
-        );
-        if (refreshResult.exitCode === 0) {
-          console.log('[cron] Token refresh:', refreshResult.stdout?.trim());
-        } else {
-          console.error('[cron] Token refresh failed (exit', refreshResult.exitCode + '):', refreshResult.stderr || refreshResult.stdout);
-        }
-      } catch (e) {
-        console.error('[cron] Token refresh error:', e);
-      }
-    }
-
     console.log('[cron] Starting backup sync to R2...');
     const result = await syncToR2(sandbox, env);
 
