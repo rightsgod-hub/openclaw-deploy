@@ -63,3 +63,5 @@ test/e2e/.dev.vars
 .wrangler-e2e-*.jsonc
 # Claude Code plans and local files
 .claude/
+_local_*.md
+_local_*.json
