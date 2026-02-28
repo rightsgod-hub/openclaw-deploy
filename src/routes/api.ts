@@ -362,15 +362,21 @@ const fs = require('fs');
 try {
   const data = JSON.parse(fs.readFileSync('${file}', 'utf8'));
   let modified = false;
-  for (const key of Object.keys(data)) {
-    if (Array.isArray(data[key])) {
-      const before = data[key].length;
-      data[key] = data[key].filter(d => d.deviceId !== '${deviceId}' && d.id !== '${deviceId}');
-      if (data[key].length < before) modified = true;
-    } else if (typeof data[key] === 'object' && data[key] !== null) {
-      if ('${deviceId}' in data[key]) {
-        delete data[key]['${deviceId}'];
-        modified = true;
+  // Check if deviceId is a top-level key (most common: paired.json structure)
+  if ('${deviceId}' in data) {
+    delete data['${deviceId}'];
+    modified = true;
+  } else {
+    for (const key of Object.keys(data)) {
+      if (Array.isArray(data[key])) {
+        const before = data[key].length;
+        data[key] = data[key].filter(d => d.deviceId !== '${deviceId}' && d.id !== '${deviceId}');
+        if (data[key].length < before) modified = true;
+      } else if (typeof data[key] === 'object' && data[key] !== null) {
+        if ('${deviceId}' in data[key]) {
+          delete data[key]['${deviceId}'];
+          modified = true;
+        }
       }
     }
   }

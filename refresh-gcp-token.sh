@@ -9,10 +9,13 @@ const crypto = require('crypto');
 const https = require('https');
 const fs = require('fs');
 let key;
-try {
-    key = JSON.parse(fs.readFileSync('/root/.gcp-service-account.json', 'utf8'));
-} catch(e) {
-    process.stderr.write('Failed to read GCP key file: ' + e.message + '\n');
+const keyPath = '/root/.gcp-service-account.json';
+if (require('fs').existsSync(keyPath)) {
+    key = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
+} else if (process.env.GCP_SERVICE_ACCOUNT_KEY) {
+    key = JSON.parse(process.env.GCP_SERVICE_ACCOUNT_KEY);
+} else {
+    process.stderr.write('No GCP key available\n');
     process.exit(1);
 }
 function b64u(s){return Buffer.from(s).toString('base64').replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');}
@@ -40,14 +43,25 @@ const configPath = '/root/.openclaw/openclaw.json';
 try {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     const token = process.argv[1];
-    if (config.models && config.models.providers) {
-        Object.values(config.models.providers).forEach(function(p) {
-            if (p.headers && p.headers.Authorization) p.headers.Authorization = 'Bearer ' + token;
-            if (p.apiKey) p.apiKey = token;
-        });
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-        console.log('Config updated with refreshed GCP token');
+    if (!config.models) config.models = {};
+    if (!config.models.providers) config.models.providers = {};
+    if (!config.models.providers['cf-ai-gw-google-0']) {
+        // openclaw doctor が削除した場合の再構築
+        config.models.providers['cf-ai-gw-google-0'] = {
+            baseUrl: 'https://aiplatform.googleapis.com/v1/projects/scrap-database-449306/locations/global/publishers/google',
+            api: 'google-generative-ai',
+            models: [{ id: 'gemini-3-flash-preview', name: 'gemini-3-flash-preview', reasoning: true, input: ['text', 'image'], contextWindow: 131072, maxTokens: 8192 }],
+            headers: { 'Authorization': 'Bearer ' + token },
+            apiKey: token
+        };
+    } else {
+        if (config.models.providers['cf-ai-gw-google-0'].headers) {
+            config.models.providers['cf-ai-gw-google-0'].headers.Authorization = 'Bearer ' + token;
+        }
+        config.models.providers['cf-ai-gw-google-0'].apiKey = token;
     }
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    console.log('Config updated with refreshed GCP token');
 } catch(e) {
     console.error('Failed to update config:', e.message);
     process.exit(1);
@@ -55,10 +69,11 @@ try {
 " "$NEW_TOKEN"
 
 # --- config.apply でgatewayメモリ更新 ---
-if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
+GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-$MOLTBOT_GATEWAY_TOKEN}"
+if [ -n "$GATEWAY_TOKEN" ]; then
     openclaw gateway call config.apply \
         --url ws://localhost:18789 \
-        --token "$OPENCLAW_GATEWAY_TOKEN" </dev/null 2>&1 | head -3 || true
+        --token "$GATEWAY_TOKEN" </dev/null 2>&1 | head -3 || true
 fi
 
 echo "GCP token refreshed at $(date)"
