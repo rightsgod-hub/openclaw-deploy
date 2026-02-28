@@ -471,20 +471,6 @@ async function scheduled(
       return;
     }
 
-    // Refresh GCP access token if Vertex AI is configured
-    if (env.GCP_SERVICE_ACCOUNT_KEY) {
-      try {
-        console.log('[cron] Refreshing GCP access token...');
-        const gatewayToken = env.MOLTBOT_GATEWAY_TOKEN || '';
-        const refreshCmd = `OPENCLAW_GATEWAY_TOKEN="${gatewayToken}" bash /usr/local/bin/refresh-gcp-token.sh`;
-        const refreshResult = await sandbox.exec(refreshCmd, { timeout: 30000 });
-        const output = refreshResult.stdout?.trim() || '';
-        console.log('[cron] Token refresh result:', output || '(no output)');
-      } catch (e) {
-        console.error('[cron] Token refresh failed:', e);
-      }
-    }
-
     console.log('[cron] Starting backup sync to R2...');
     const result = await syncToR2(sandbox, env);
 

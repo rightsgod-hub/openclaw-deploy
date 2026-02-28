@@ -173,38 +173,6 @@ if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ]; then
 
 fi
 
-# FETCH GCP ACCESS TOKEN (must be before patch so token is available)
-# ============================================================
-fetch_gcp_token() {
-    node -e "
-const crypto = require('crypto');
-const https = require('https');
-let key; try { key = JSON.parse(process.env.GCP_SERVICE_ACCOUNT_KEY || '{}'); } catch(e) { process.stderr.write('Invalid GCP_SERVICE_ACCOUNT_KEY JSON: ' + e.message + '\\n'); process.exit(1); }
-function b64u(s){return Buffer.from(s).toString('base64').replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');}
-const now=Math.floor(Date.now()/1000);
-const h=b64u(JSON.stringify({alg:'RS256',typ:'JWT'}));
-const c=b64u(JSON.stringify({iss:key.client_email,scope:'https://www.googleapis.com/auth/cloud-platform',aud:'https://oauth2.googleapis.com/token',exp:now+3600,iat:now}));
-const sign=crypto.createSign('RSA-SHA256');
-sign.update(h+'.'+c);
-const sig=sign.sign(key.private_key,'base64').replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
-const jwt=h+'.'+c+'.'+sig;
-const body='grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion='+jwt;
-const req=https.request({hostname:'oauth2.googleapis.com',path:'/token',method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Content-Length':body.length}},res=>{let d='';res.on('data',c=>d+=c);res.on('end',()=>{const r=JSON.parse(d);if(r.access_token){process.stdout.write(r.access_token);}else{process.stderr.write('token error: '+d);}});});
-req.write(body);req.end();
-" 2>/dev/null
-}
-
-if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ] && [ "$USE_VERTEX_AI" = "true" ]; then
-    echo "Fetching GCP access token for Vertex AI..."
-    GCP_ACCESS_TOKEN=$(fetch_gcp_token) || true
-    if [ -n "$GCP_ACCESS_TOKEN" ]; then
-        export GCP_ACCESS_TOKEN
-        echo "GCP access token obtained successfully"
-    else
-        echo "WARNING: Failed to obtain GCP access token"
-    fi
-fi
-
 # ============================================================
 # openclaw onboard handles provider/model config, but we need to patch in:
 # - Channel config (Telegram, Discord, Slack)
@@ -261,93 +229,24 @@ const accountId = process.env.CF_AI_GATEWAY_ACCOUNT_ID;
 const gatewayId = process.env.CF_AI_GATEWAY_GATEWAY_ID;
 const apiKey = process.env.CLOUDFLARE_AI_GATEWAY_API_KEY;
 
-const hasVertexCreds = process.env.USE_VERTEX_AI === 'true' && process.env.GCP_PROJECT_ID && process.env.GCP_SERVICE_ACCOUNT_KEY;
-if (modelList.length > 0 && (apiKey || hasVertexCreds)) {
-    config.models = config.models || {};
-    config.models.providers = config.models.providers || {};
+// google-vertexプロバイダー設定（ADC自動更新）
+if (!config.models) config.models = {};
+if (!config.models.providers) config.models.providers = {};
+config.models.providers['google-vertex-0'] = {
+    api: 'google-vertex',
+    project: 'scrap-database-449306',
+    location: 'global',
+    models: [{ id: 'gemini-3-flash-preview', name: 'gemini-3-flash-preview', reasoning: true, input: ['text', 'image'], contextWindow: 131072, maxTokens: 8192 }]
+};
+// cf-ai-gw-google-0（旧設定）を削除
+delete config.models.providers['cf-ai-gw-google-0'];
 
-    let primaryModel = null;
-
-    modelList.forEach((raw, idx) => {
-        const slashIdx = raw.indexOf('/');
-        const gwProvider = raw.substring(0, slashIdx);
-        const modelId = raw.substring(slashIdx + 1);
-
-        let baseUrl;
-        const useVertexAI = process.env.USE_VERTEX_AI === 'true' && process.env.GCP_PROJECT_ID && process.env.GCP_SERVICE_ACCOUNT_KEY;
-
-        if (gwProvider.includes('google') && useVertexAI) {
-            // Vertex AI (enterprise Google Cloud)
-            // gemini-3-* models are global-only; other models use regional endpoint
-            const region = process.env.GCP_REGION || 'us-central1';
-            const projectId = process.env.GCP_PROJECT_ID;
-            const isGlobalModel = modelId.startsWith('gemini-3') || region === 'global';
-            if (isGlobalModel) {
-                baseUrl = 'https://aiplatform.googleapis.com/v1/projects/' + projectId + '/locations/global/publishers/google';
-            } else {
-                baseUrl = 'https://' + region + '-aiplatform.googleapis.com/v1/projects/' + projectId + '/locations/' + region + '/publishers/google';
-            }
-            console.log('Using Vertex AI endpoint: ' + baseUrl);
-        } else if (gwProvider.includes('google')) {
-            // Direct Google API (bypasses AI Gateway for Gemini/Gemma)
-            baseUrl = 'https://generativelanguage.googleapis.com/v1beta';
-        } else if (accountId && gatewayId) {
-            baseUrl = 'https://gateway.ai.cloudflare.com/v1/' + accountId + '/' + gatewayId + '/' + gwProvider;
-            if (gwProvider === 'workers-ai') baseUrl += '/v1';
-        } else if (gwProvider === 'workers-ai' && process.env.CF_ACCOUNT_ID) {
-            baseUrl = 'https://api.cloudflare.com/client/v4/accounts/' + process.env.CF_ACCOUNT_ID + '/ai/v1';
-        }
-
-        if (baseUrl) {
-            const api = gwProvider === 'anthropic' ? 'anthropic-messages' :
-                        gwProvider.includes('google') ? 'google-generative-ai' :
-                        'openai-completions';
-            const providerName = 'cf-ai-gw-' + gwProvider + '-' + idx;
-
-            const providerConfig = {
-                baseUrl: baseUrl,
-                api: api,
-                models: [{
-                    id: modelId,
-                    name: modelId,
-                    reasoning: true,
-                    input: ['text', 'image'],
-                    contextWindow: 131072,
-                    maxTokens: 8192
-                }],
-            };
-
-            // Authentication: Vertex AI uses Authorization: Bearer token (fetched before this patch)
-            // apiKey is required by OpenClaw auth resolution (getCustomProviderApiKey check)
-            // headers.Authorization overrides x-goog-api-key for Vertex AI REST API
-            if (useVertexAI && gwProvider.includes('google')) {
-                if (process.env.GCP_ACCESS_TOKEN) {
-                    providerConfig.headers = { 'Authorization': 'Bearer ' + process.env.GCP_ACCESS_TOKEN };
-                    providerConfig.apiKey = process.env.GCP_ACCESS_TOKEN;
-                }
-            } else {
-                providerConfig.apiKey = apiKey;
-            }
-
-            config.models.providers[providerName] = providerConfig;
-
-            if (idx === 0) {
-                primaryModel = providerName + '/' + modelId;
-            }
-
-            console.log('Registered model ' + (idx + 1) + '/' + modelList.length + ': provider=' + providerName + ' model=' + modelId + ' via ' + baseUrl);
-        }
-    });
-
-    if (primaryModel) {
-        config.agents = config.agents || {};
-        config.agents.defaults = config.agents.defaults || {};
-        config.agents.defaults.model = { primary: primaryModel };
-        console.log('Primary model set to: ' + primaryModel);
-    }
-} else if (modelList.length > 0) {
-    console.warn('CF_AI_GATEWAY_MODEL(S) set but missing API key');
-}
+if (!config.agents) config.agents = {};
+if (!config.agents.defaults) config.agents.defaults = {};
+if (!config.agents.defaults.model) config.agents.defaults.model = {};
+config.agents.defaults.model.primary = 'google-vertex/gemini-3-flash-preview';
+console.log('google-vertex provider configured with ADC');
+console.log('Primary model set to: google-vertex/gemini-3-flash-preview');
 
 // Telegram configuration
 // Overwrite entire channel object to drop stale keys from old R2 backups
@@ -416,38 +315,6 @@ echo "Gateway will be available on port 18789"
 
 echo "Dev mode: ${OPENCLAW_DEV_MODE:-false}"
 
-# Token refresh loop helper: update config with new token and restart gateway
-refresh_and_restart() {
-    local new_token
-    new_token=$(fetch_gcp_token)
-    if [ -z "$new_token" ]; then
-        echo "WARNING: GCP token refresh failed, gateway continues with expired token"
-        return
-    fi
-    export GCP_ACCESS_TOKEN="$new_token"
-    echo "GCP token refreshed at $(date)"
-
-    # Update openclaw.json with new token
-    node -e "
-const fs = require('fs');
-const configPath = '/root/.openclaw/openclaw.json';
-try {
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    const token = process.env.GCP_ACCESS_TOKEN;
-    if (config.models && config.models.providers) {
-        Object.values(config.models.providers).forEach(function(p) {
-            if (p.headers && p.headers.Authorization) p.headers.Authorization = 'Bearer ' + token;
-            if (p.apiKey) p.apiKey = token;
-        });
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-        console.log('Config updated with refreshed GCP token');
-    }
-} catch(e) {
-    console.error('Failed to update config:', e.message);
-}
-"
-}
-
 start_gateway() {
     rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
     rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
@@ -459,42 +326,13 @@ start_gateway() {
     echo $!
 }
 
-if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ] && [ "$USE_VERTEX_AI" = "true" ]; then
-    # Vertex AI token refresh: real-time based (handles container hibernation)
-    # - Check interval: sleep 300 (5 min)
-    # - Refresh threshold: 3000s (50 min) since last token generation
-    # - On hibernation wake: 5-min sleep completes, date +%s detects staleness,
-    #   token refreshes immediately (max 5 min delay)
-    GATEWAY_PID=$(start_gateway)
-    TOKEN_GENERATED_AT=$(date +%s)
-    echo "Gateway started with PID $GATEWAY_PID (token refresh: 5-min check, 50-min threshold)"
-
-    while true; do
-        sleep 300
-        CURRENT_TIME=$(date +%s)
-        if [ $(( $CURRENT_TIME - $TOKEN_GENERATED_AT )) -ge 3000 ]; then
-            echo "Stale token detected (elapsed: $(( $CURRENT_TIME - $TOKEN_GENERATED_AT ))s), refreshing..."
-            refresh_and_restart
-            # Hot-reload token via config.apply (kill doesn't work in CF Container sandbox)
-            # refresh_and_restart() already updated openclaw.json; config.apply reloads from file
-            if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
-                openclaw gateway call config.apply \
-                    --url ws://localhost:18789 \
-                    --token "$OPENCLAW_GATEWAY_TOKEN" </dev/null 2>&1 | head -3 || true
-            fi
-            TOKEN_GENERATED_AT=$CURRENT_TIME
-            echo "Token refreshed and config.applied at $(date)"
-        fi
-    done
+# Start gateway directly (ADC handles Vertex AI token refresh automatically)
+rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
+rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
+if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
+    echo "Starting gateway with token auth..."
+    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan --token "$OPENCLAW_GATEWAY_TOKEN"
 else
-    # No Vertex AI: start gateway directly (no token refresh needed)
-    rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
-    rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
-    if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
-        echo "Starting gateway with token auth..."
-        exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan --token "$OPENCLAW_GATEWAY_TOKEN"
-    else
-        echo "Starting gateway with device pairing (no token)..."
-        exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan
-    fi
+    echo "Starting gateway with device pairing (no token)..."
+    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan
 fi
