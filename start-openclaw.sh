@@ -9,6 +9,10 @@
 # set -e removed: single command failure must not kill the entire script
 # Each section handles its own errors with || true or fallback logic
 
+# 二重起動防止（FUSE遅延中の複数インスタンス競合を防止）
+exec 9>/tmp/openclaw-start.lock
+flock -n 9 || { echo "Another start-openclaw.sh is already running, exiting."; exit 0; }
+
 if pgrep -f "openclaw gateway" > /dev/null 2>&1; then
     echo "OpenClaw gateway is already running, exiting."
     exit 0
@@ -107,7 +111,8 @@ if [ -d "$BACKUP_DIR/workspace" ] && [ "$(ls -A $BACKUP_DIR/workspace 2>/dev/nul
     mkdir -p "$WORKSPACE_DIR"
     # デプロイされたばかりのテンプレートを消去して、R2の記憶で上書きする
     rm -rf "${WORKSPACE_DIR:?}"/*
-    cp -a "$BACKUP_DIR/workspace/." "$WORKSPACE_DIR/"
+    # .venv（Python仮想環境、1668ファイル）と.gitを除外してFUSEタイムアウトを防止
+    rsync -a --exclude='.venv' --exclude='.git' "$BACKUP_DIR/workspace/" "$WORKSPACE_DIR/"
     echo "Restored workspace from R2 backup"
 fi
 
@@ -169,6 +174,8 @@ if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ]; then
     echo "$GCP_SERVICE_ACCOUNT_KEY" > "$GCP_KEY_FILE"
     chmod 600 "$GCP_KEY_FILE"
     export GOOGLE_APPLICATION_CREDENTIALS="$GCP_KEY_FILE"
+    export GOOGLE_CLOUD_PROJECT="scrap-database-449306"
+    export GOOGLE_CLOUD_LOCATION="global"
     echo "GCP service account key written to $GCP_KEY_FILE"
 
 fi
