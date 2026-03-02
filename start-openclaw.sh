@@ -236,24 +236,15 @@ const accountId = process.env.CF_AI_GATEWAY_ACCOUNT_ID;
 const gatewayId = process.env.CF_AI_GATEWAY_GATEWAY_ID;
 const apiKey = process.env.CLOUDFLARE_AI_GATEWAY_API_KEY;
 
-// google-vertexプロバイダー設定（ADC自動更新）
+// cf-ai-gw-google-0 を維持（refresh-gcp-token.sh がトークン更新・プロバイダー再構築を担当）
 if (!config.models) config.models = {};
 if (!config.models.providers) config.models.providers = {};
-config.models.providers['google-vertex'] = {
-    api: 'google-vertex',
-    project: 'scrap-database-449306',
-    location: 'global',
-    models: [{ id: 'gemini-3-flash-preview', name: 'gemini-3-flash-preview', reasoning: true, input: ['text', 'image'], contextWindow: 131072, maxTokens: 8192 }]
-};
-// cf-ai-gw-google-0（旧設定）を削除
-delete config.models.providers['cf-ai-gw-google-0'];
 
 if (!config.agents) config.agents = {};
 if (!config.agents.defaults) config.agents.defaults = {};
 if (!config.agents.defaults.model) config.agents.defaults.model = {};
-config.agents.defaults.model.primary = 'google-vertex/gemini-3-flash-preview';
-console.log('google-vertex provider configured with ADC');
-console.log('Primary model set to: google-vertex/gemini-3-flash-preview');
+config.agents.defaults.model.primary = 'cf-ai-gw-google-0/gemini-3-flash-preview';
+console.log('Primary model set to: cf-ai-gw-google-0/gemini-3-flash-preview');
 
 // Telegram configuration
 // Overwrite entire channel object to drop stale keys from old R2 backups
@@ -313,6 +304,15 @@ config.messages.ackReactionScope = "group-mentions";
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration patched successfully');
 EOFPATCH
+
+# ============================================================
+# REFRESH GCP TOKEN BEFORE GATEWAY START
+# ============================================================
+if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ]; then
+    echo "Refreshing GCP access token before gateway start..."
+    bash /usr/local/bin/refresh-gcp-token.sh || true
+    echo "Pre-start GCP token refresh completed"
+fi
 
 # ============================================================
 # START GATEWAY
