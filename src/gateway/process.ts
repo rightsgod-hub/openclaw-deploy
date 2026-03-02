@@ -122,7 +122,14 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
         );
         const portStatus = portCheck.stdout?.trim() || 'port_free';
         if (portStatus === 'port_in_use') {
-          console.log('[Gateway] Port 18789 in use, skipping cleanup (gateway likely running)');
+          // We only reach here when findExistingMoltbotProcess returned null (no running gateway).
+          // Port occupied without a running process = zombie. Force cleanup.
+          console.log('[Gateway] Port 18789 occupied but no running gateway found, force killing...');
+          await sandbox.exec(
+            'pkill -9 -f "openclaw gateway" 2>/dev/null; pkill -9 -f "start-openclaw" 2>/dev/null; sleep 3; rm -f /tmp/openclaw-start.lock /tmp/openclaw-gateway.lock /root/.openclaw/gateway.lock 2>/dev/null; true',
+            { timeout: 15000 },
+          );
+          console.log('[Gateway] Force cleanup complete');
         } else {
           console.log('[Gateway] Port 18789 free, cleaning up orphaned processes...');
           await sandbox.exec(

@@ -172,7 +172,7 @@ describe('ensureMoltbotGateway', () => {
     } as Process;
   }
 
-  it('skips cleanup when port 18789 is in use (gateway running)', async () => {
+  it('force kills zombie process when port 18789 is in use but no running gateway found', async () => {
     const mockProcess = createRunningMockProcess();
 
     const execMock = vi.fn()
@@ -198,11 +198,11 @@ describe('ensureMoltbotGateway', () => {
       expect.any(Object),
     );
 
-    // pkill should NOT be called (port is in use, so cleanup is skipped)
+    // pkill SHOULD be called (port in use but no running process = zombie, force kill)
     const pkillCalls = execMock.mock.calls.filter(
       (call: any[]) => typeof call[0] === 'string' && call[0].includes('pkill'),
     );
-    expect(pkillCalls).toHaveLength(0);
+    expect(pkillCalls).toHaveLength(1);
   });
 
   it('runs cleanup when port 18789 is free (orphaned process)', async () => {
