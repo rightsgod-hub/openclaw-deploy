@@ -112,19 +112,27 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
       const envVars = buildEnvVars(env);
       const command = '/usr/local/bin/start-openclaw.sh';
 
-      // Clean up orphaned gateway processes from previous DO lifecycles.
-      // After a deploy, the Durable Object resets and loses its process tracking,
-      // but the actual Linux process (openclaw gateway) may still be running in the
-      // container, holding the flock on /tmp/openclaw-start.lock. Kill it first.
+      // Clean up orphaned gateway processes ONLY if port is not in use.
+      // If port 18789 is active, the gateway is running even if Sandbox SDK
+      // can't find it (e.g., after exec replaces the shell with gateway binary).
       try {
-        console.log('[Gateway] Cleaning up orphaned processes...');
-        await sandbox.exec(
-          'pkill -f "openclaw gateway" 2>/dev/null; sleep 2; rm -f /tmp/openclaw-start.lock /tmp/openclaw-gateway.lock /root/.openclaw/gateway.lock 2>/dev/null; true',
-          { timeout: 15000 },
+        const portCheck = await sandbox.exec(
+          'curl -so /dev/null --connect-timeout 2 http://localhost:18789/ 2>/dev/null && echo "port_in_use" || echo "port_free"',
+          { timeout: 5000 },
         );
-        console.log('[Gateway] Cleanup complete');
+        const portStatus = portCheck.stdout?.trim() || 'port_free';
+        if (portStatus === 'port_in_use') {
+          console.log('[Gateway] Port 18789 in use, skipping cleanup (gateway likely running)');
+        } else {
+          console.log('[Gateway] Port 18789 free, cleaning up orphaned processes...');
+          await sandbox.exec(
+            'pkill -f "openclaw gateway" 2>/dev/null; sleep 2; rm -f /tmp/openclaw-start.lock /tmp/openclaw-gateway.lock /root/.openclaw/gateway.lock 2>/dev/null; true',
+            { timeout: 15000 },
+          );
+          console.log('[Gateway] Cleanup complete');
+        }
       } catch (e) {
-        console.log('[Gateway] Cleanup failed (non-fatal):', e);
+        console.log('[Gateway] Cleanup check failed (non-fatal):', e);
       }
 
       console.log('Starting process with command:', command);

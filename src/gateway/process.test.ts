@@ -1,7 +1,14 @@
-import { describe, it, expect, vi } from 'vitest';
-import { findExistingMoltbotProcess } from './process';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { findExistingMoltbotProcess, ensureMoltbotGateway } from './process';
 import type { Sandbox, Process } from '@cloudflare/sandbox';
-import { createMockSandbox } from '../test-utils';
+import { createMockSandbox, suppressConsole } from '../test-utils';
+
+vi.mock('./r2', () => ({
+  mountR2Storage: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('./env', () => ({
+  buildEnvVars: vi.fn().mockReturnValue({}),
+}));
 
 function createFullMockProcess(overrides: Partial<Process> = {}): Process {
   return {
@@ -141,5 +148,89 @@ describe('findExistingMoltbotProcess', () => {
 
     const result = await findExistingMoltbotProcess(sandbox);
     expect(result).toBeNull();
+  });
+});
+
+describe('ensureMoltbotGateway', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    suppressConsole();
+  });
+
+  function createRunningMockProcess(overrides: Partial<Process> = {}): Process {
+    return {
+      id: 'new-proc',
+      command: 'start-openclaw.sh',
+      status: 'running',
+      startTime: new Date(),
+      endTime: undefined,
+      exitCode: undefined,
+      waitForPort: vi.fn().mockResolvedValue(undefined),
+      kill: vi.fn(),
+      getLogs: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+      ...overrides,
+    } as Process;
+  }
+
+  it('skips cleanup when port 18789 is in use (gateway running)', async () => {
+    const mockProcess = createRunningMockProcess();
+
+    const execMock = vi.fn()
+      // 1st call: port check -> port_in_use
+      .mockResolvedValueOnce({ exitCode: 0, stdout: 'port_in_use\n', stderr: '', command: '', durationMs: 0 })
+      // Any subsequent exec calls
+      .mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 });
+
+    const sandbox = {
+      mountBucket: vi.fn().mockResolvedValue(undefined),
+      listProcesses: vi.fn().mockResolvedValue([]),
+      exec: execMock,
+      startProcess: vi.fn().mockResolvedValue(mockProcess),
+    } as unknown as Sandbox;
+
+    const env = { Sandbox: {}, ASSETS: {}, MOLTBOT_BUCKET: {} } as any;
+
+    await ensureMoltbotGateway(sandbox, env);
+
+    // Port check should have been called
+    expect(execMock).toHaveBeenCalledWith(
+      expect.stringContaining('curl -so /dev/null --connect-timeout 2 http://localhost:18789/'),
+      expect.any(Object),
+    );
+
+    // pkill should NOT be called (port is in use, so cleanup is skipped)
+    const pkillCalls = execMock.mock.calls.filter(
+      (call: any[]) => typeof call[0] === 'string' && call[0].includes('pkill'),
+    );
+    expect(pkillCalls).toHaveLength(0);
+  });
+
+  it('runs cleanup when port 18789 is free (orphaned process)', async () => {
+    const mockProcess = createRunningMockProcess();
+
+    const execMock = vi.fn()
+      // 1st call: port check -> port_free
+      .mockResolvedValueOnce({ exitCode: 0, stdout: 'port_free\n', stderr: '', command: '', durationMs: 0 })
+      // 2nd call: pkill cleanup
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 })
+      // Any subsequent exec calls
+      .mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 });
+
+    const sandbox = {
+      mountBucket: vi.fn().mockResolvedValue(undefined),
+      listProcesses: vi.fn().mockResolvedValue([]),
+      exec: execMock,
+      startProcess: vi.fn().mockResolvedValue(mockProcess),
+    } as unknown as Sandbox;
+
+    const env = { Sandbox: {}, ASSETS: {}, MOLTBOT_BUCKET: {} } as any;
+
+    await ensureMoltbotGateway(sandbox, env);
+
+    // pkill should be called (port is free, so cleanup runs)
+    const pkillCalls = execMock.mock.calls.filter(
+      (call: any[]) => typeof call[0] === 'string' && call[0].includes('pkill'),
+    );
+    expect(pkillCalls).toHaveLength(1);
   });
 });

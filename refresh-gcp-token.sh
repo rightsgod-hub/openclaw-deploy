@@ -3,6 +3,18 @@
 # GCPアクセストークンを更新してgatewayにconfig.apply
 # Called by Workers cron trigger via sandbox.exec
 
+# --- 更新頻度の制御（GCPトークンは1時間有効、期限切れ5分前に更新） ---
+LAST_REFRESH_FILE="/tmp/gcp-token-last-refresh"
+if [ -f "$LAST_REFRESH_FILE" ]; then
+    LAST_EPOCH=$(cat "$LAST_REFRESH_FILE" 2>/dev/null || echo "0")
+    NOW_EPOCH=$(date +%s)
+    ELAPSED=$((NOW_EPOCH - LAST_EPOCH))
+    if [ "$ELAPSED" -lt 3300 ]; then
+        echo "GCP token still fresh (${ELAPSED}s elapsed, threshold: 3300s). Skipping."
+        exit 0
+    fi
+fi
+
 # --- Token取得（GCPキーをファイルから読み込み） ---
 NEW_TOKEN=$(node -e "
 const crypto = require('crypto');
@@ -68,12 +80,7 @@ try {
 }
 " "$NEW_TOKEN"
 
-# --- config.apply でgatewayメモリ更新 ---
-GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-$MOLTBOT_GATEWAY_TOKEN}"
-if [ -n "$GATEWAY_TOKEN" ]; then
-    openclaw gateway call config.apply \
-        --url ws://localhost:18789 \
-        --token "$GATEWAY_TOKEN" </dev/null 2>&1 | head -3 || true
-fi
+# --- 更新タイムスタンプ記録 ---
+date +%s > "$LAST_REFRESH_FILE"
 
 echo "GCP token refreshed at $(date)"

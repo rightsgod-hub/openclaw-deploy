@@ -451,24 +451,44 @@ async function scheduled(
 
     let gatewayProcess = await findExistingMoltbotProcess(sandbox);
     if (!gatewayProcess) {
-      console.log('[cron] Gateway not running, attempting to start...');
+      // Fallback: check if port is listening even though no process was found.
+      // After exec replaces the shell, Sandbox SDK loses track of the process,
+      // but the gateway is still running and listening on the port.
+      let portListening = false;
       try {
-        await ensureMoltbotGateway(sandbox, env);
-        console.log('[cron] Gateway started successfully, skipping sync this round');
-        return;
-      } catch (startError) {
-        console.error('[cron] Failed to start gateway:', startError);
-        return;
+        const portCheck = await sandbox.exec(
+          'curl -so /dev/null --connect-timeout 2 http://localhost:18789/ 2>/dev/null && echo "yes" || echo "no"',
+          { timeout: 5000 },
+        );
+        portListening = portCheck.stdout?.trim() === 'yes';
+      } catch {}
+
+      if (portListening) {
+        console.log('[cron] No process found but port 18789 is listening, gateway is running');
+      } else {
+        console.log('[cron] Gateway not running, attempting to start...');
+        try {
+          await ensureMoltbotGateway(sandbox, env);
+          console.log('[cron] Gateway started successfully, skipping sync this round');
+          return;
+        } catch (startError) {
+          console.error('[cron] Failed to start gateway:', startError);
+          return;
+        }
       }
     }
 
-    try {
-      console.log('[cron] Verifying gateway responsiveness...');
-      await gatewayProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
-      console.log('[cron] Gateway is responsive, proceeding with sync');
-    } catch (e) {
-      console.log('[cron] Gateway exists but port not ready, skipping sync');
-      return;
+    if (gatewayProcess) {
+      try {
+        console.log('[cron] Verifying gateway responsiveness...');
+        await gatewayProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
+        console.log('[cron] Gateway is responsive, proceeding with sync');
+      } catch (e) {
+        console.log('[cron] Gateway exists but port not ready, skipping sync');
+        return;
+      }
+    } else {
+      console.log('[cron] Gateway detected via port check, proceeding with sync');
     }
 
     // Refresh GCP access token if Vertex AI is configured
