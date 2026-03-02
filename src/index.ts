@@ -464,17 +464,16 @@ async function scheduled(
       } catch {}
 
       if (portListening) {
-        console.log('[cron] No process found but port 18789 is listening, gateway is running');
+        console.log('[cron] No process found but port 18789 is listening, may be zombie - attempting ensureMoltbotGateway...');
       } else {
         console.log('[cron] Gateway not running, attempting to start...');
-        try {
-          await ensureMoltbotGateway(sandbox, env);
-          console.log('[cron] Gateway started successfully, skipping sync this round');
-          return;
-        } catch (startError) {
-          console.error('[cron] Failed to start gateway:', startError);
-          return;
-        }
+      }
+      try {
+        await ensureMoltbotGateway(sandbox, env);
+        console.log('[cron] Gateway ensured successfully');
+      } catch (startError) {
+        console.error('[cron] Failed to start gateway:', startError);
+        return;
       }
     }
 
