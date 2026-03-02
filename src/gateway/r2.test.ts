@@ -140,7 +140,7 @@ describe('mountR2Storage', () => {
       expect(console.error).toHaveBeenCalledWith('Failed to mount R2 bucket:', 'Mount failed');
     });
 
-    it('returns true if mount fails but check shows it is actually mounted', async () => {
+    it('returns true if mount fails but check shows it is already mounted', async () => {
       const { sandbox, mountBucketMock } = createMockSandbox();
 
       mountBucketMock.mockRejectedValue(new Error('already mounted'));
@@ -151,6 +151,26 @@ describe('mountR2Storage', () => {
 
       expect(result).toBe(true);
       expect(console.log).toHaveBeenCalledWith('R2 bucket already mounted (detected from error):', 'already mounted');
+    });
+
+    it('returns true when s3fs reports MOUNTPOINT directory is not empty', async () => {
+      const { sandbox, mountBucketMock } = createMockSandbox();
+
+      mountBucketMock.mockRejectedValue(
+        new Error(
+          'S3FSMountError: S3FS mount failed: s3fs: MOUNTPOINT directory /data/moltbot is not empty. if you are sure this is safe, can use the \'nonempty\' mount option.',
+        ),
+      );
+
+      const env = createMockEnvWithR2();
+
+      const result = await mountR2Storage(sandbox, env);
+
+      expect(result).toBe(true);
+      expect(console.log).toHaveBeenCalledWith(
+        'R2 bucket already mounted (detected from error):',
+        expect.stringContaining('not empty'),
+      );
     });
   });
 
