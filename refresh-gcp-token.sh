@@ -3,14 +3,14 @@
 # GCPアクセストークンを更新してgatewayにconfig.apply
 # Called by Workers cron trigger via sandbox.exec
 
-# --- 更新頻度の制御（GCPトークンは1時間有効、期限切れ5分前に更新） ---
+# --- 更新頻度の制御（GCPトークンは1時間有効、期限切れ20分前に更新） ---
 LAST_REFRESH_FILE="/tmp/gcp-token-last-refresh"
 if [ -f "$LAST_REFRESH_FILE" ]; then
     LAST_EPOCH=$(cat "$LAST_REFRESH_FILE" 2>/dev/null || echo "0")
     NOW_EPOCH=$(date +%s)
     ELAPSED=$((NOW_EPOCH - LAST_EPOCH))
-    if [ "$ELAPSED" -lt 3300 ]; then
-        echo "GCP token still fresh (${ELAPSED}s elapsed, threshold: 3300s). Skipping."
+    if [ "$ELAPSED" -lt 2400 ]; then
+        echo "GCP token still fresh (${ELAPSED}s elapsed, threshold: 2400s). Skipping."
         exit 0
     fi
 fi
@@ -79,6 +79,17 @@ try {
     process.exit(1);
 }
 " "$NEW_TOKEN"
+
+# --- ゲートウェイのメモリ上の設定を強制更新 ---
+GW_TOKEN=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8'));process.stdout.write(c.gateway&&c.gateway.auth&&c.gateway.auth.token||'')}catch(e){}" 2>/dev/null)
+if [ -n "$GW_TOKEN" ]; then
+    openclaw gateway call config.apply \
+        --url ws://localhost:18789 \
+        --token "$GW_TOKEN" </dev/null 2>&1 | head -3 || true
+    echo "config.apply triggered"
+else
+    echo "WARNING: Could not read gateway token for config.apply"
+fi
 
 # --- 更新タイムスタンプ記録 ---
 date +%s > "$LAST_REFRESH_FILE"
