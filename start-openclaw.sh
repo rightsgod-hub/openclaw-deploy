@@ -239,7 +239,7 @@ const apiKey = process.env.CLOUDFLARE_AI_GATEWAY_API_KEY;
 // google-vertexプロバイダー設定（ADC自動更新）
 if (!config.models) config.models = {};
 if (!config.models.providers) config.models.providers = {};
-config.models.providers['google-vertex-0'] = {
+config.models.providers['google-vertex'] = {
     api: 'google-vertex',
     project: 'scrap-database-449306',
     location: 'global',
