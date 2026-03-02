@@ -67,7 +67,11 @@ export async function mountR2Storage(sandbox: Sandbox, env: MoltbotEnv): Promise
     const errorMessage = err instanceof Error ? err.message : String(err);
     // If already mounted, treat as success without calling exec
     const errLower = errorMessage.toLowerCase();
-    if (errLower.includes('already') || (errLower.includes('mount') && errLower.includes('exist'))) {
+    if (
+      errLower.includes('already') ||
+      (errLower.includes('mount') && errLower.includes('exist')) ||
+      errLower.includes('not empty')
+    ) {
       console.log('R2 bucket already mounted (detected from error):', errorMessage);
       r2MountConfirmed = true;
       return true;
