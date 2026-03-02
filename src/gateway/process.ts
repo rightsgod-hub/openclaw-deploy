@@ -112,6 +112,21 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
       const envVars = buildEnvVars(env);
       const command = '/usr/local/bin/start-openclaw.sh';
 
+      // Clean up orphaned gateway processes from previous DO lifecycles.
+      // After a deploy, the Durable Object resets and loses its process tracking,
+      // but the actual Linux process (openclaw gateway) may still be running in the
+      // container, holding the flock on /tmp/openclaw-start.lock. Kill it first.
+      try {
+        console.log('[Gateway] Cleaning up orphaned processes...');
+        await sandbox.exec(
+          'pkill -f "openclaw gateway" 2>/dev/null; sleep 2; rm -f /tmp/openclaw-start.lock /tmp/openclaw-gateway.lock /root/.openclaw/gateway.lock 2>/dev/null; true',
+          { timeout: 15000 },
+        );
+        console.log('[Gateway] Cleanup complete');
+      } catch (e) {
+        console.log('[Gateway] Cleanup failed (non-fatal):', e);
+      }
+
       console.log('Starting process with command:', command);
       console.log('Environment vars being passed:', Object.keys(envVars));
 
