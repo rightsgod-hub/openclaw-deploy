@@ -500,6 +500,13 @@ async function scheduled(
         const refreshResult = await sandbox.exec(refreshCmd, { timeout: 30000 });
         const output = refreshResult.stdout?.trim() || '';
         console.log('[cron] Token refresh result:', output || '(no output)');
+        // Force gateway to reload config from disk
+        try {
+          await sandbox.exec(`openclaw gateway call config.apply --url ws://localhost:18789 --token "${gatewayToken}"`, { timeout: 10000 });
+          console.log('[cron] config.apply triggered');
+        } catch (applyErr) {
+          console.error('[cron] config.apply failed:', applyErr);
+        }
       } catch (e) {
         console.error('[cron] Token refresh failed:', e);
       }
