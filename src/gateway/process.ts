@@ -6,7 +6,7 @@ import { mountR2Storage } from './r2';
 
 // Module-level guard: prevents multiple concurrent gateway spawns.
 // If one request is already starting the gateway, others wait for it.
-let gatewayStartPromise: Promise<Process> | null = null;
+let gatewayStartPromise: Promise<Process | null> | null = null;
 
 /**
  * Find an existing OpenClaw gateway process
@@ -70,7 +70,7 @@ export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Proc
 export async function isGatewayPortResponding(sandbox: Sandbox): Promise<boolean> {
   try {
     const portCheck = await sandbox.exec(
-      'curl -so /dev/null --connect-timeout 2 http://localhost:18789/ 2>/dev/null && echo "yes" || echo "no"',
+      'curl -sf --connect-timeout 2 http://localhost:18789/healthz 2>/dev/null && echo "yes" || echo "no"',
       { timeout: 5000 },
     );
     return portCheck.stdout?.trim() === 'yes';
@@ -79,7 +79,7 @@ export async function isGatewayPortResponding(sandbox: Sandbox): Promise<boolean
   }
 }
 
-export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): Promise<Process> {
+export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): Promise<Process | null> {
   // Mount R2 storage for persistent data (non-blocking if not configured)
   // R2 is used as a backup - the startup script will restore from it on boot
   await mountR2Storage(sandbox, env);
@@ -97,13 +97,12 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
     if (existingProcess) {
       return existingProcess;
     }
-    // Port responding but no SDK process found. This happens when the old
+    // Port responding but no SDK process found. This happens when the
     // exec-based start-openclaw.sh replaced the shell process.
-    // The gateway is healthy - do NOT kill it. Start a no-op wrapper process
-    // so we have a Process handle to return.
-    console.log('[Gateway] No SDK process found but gateway is alive, creating wrapper process');
-    const wrapper = await sandbox.startProcess('sleep infinity', {});
-    return wrapper;
+    // The gateway is healthy - no action needed. All callers ignore the
+    // return value, so returning null is safe.
+    console.log('[Gateway] No SDK process found but gateway is alive, returning null');
+    return null;
   }
 
   if (existingProcess) {

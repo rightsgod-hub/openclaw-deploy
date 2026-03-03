@@ -206,8 +206,6 @@ describe('ensureMoltbotGateway', () => {
   }
 
   it('does not kill gateway when port is responding (even without SDK process)', async () => {
-    const wrapperProcess = createRunningMockProcess({ id: 'wrapper', command: 'sleep infinity' });
-
     const execMock = vi.fn()
       // 1st call: port check -> yes (port is responding)
       .mockResolvedValueOnce({ exitCode: 0, stdout: 'yes\n', stderr: '', command: '', durationMs: 0 })
@@ -218,22 +216,22 @@ describe('ensureMoltbotGateway', () => {
       mountBucket: vi.fn().mockResolvedValue(undefined),
       listProcesses: vi.fn().mockResolvedValue([]),
       exec: execMock,
-      startProcess: vi.fn().mockResolvedValue(wrapperProcess),
+      startProcess: vi.fn(),
     } as unknown as Sandbox;
 
     const env = { Sandbox: {}, ASSETS: {}, MOLTBOT_BUCKET: {} } as any;
 
     const result = await ensureMoltbotGateway(sandbox, env);
 
-    // Port responding + no SDK process -> should create wrapper, NOT kill
+    // Port responding + no SDK process -> should NOT kill, NOT start any process
     const pkillCalls = execMock.mock.calls.filter(
       (call: any[]) => typeof call[0] === 'string' && call[0].includes('pkill'),
     );
     expect(pkillCalls).toHaveLength(0);
 
-    // Should have started a wrapper process
-    expect(sandbox.startProcess).toHaveBeenCalledWith('sleep infinity', {});
-    expect(result).toBe(wrapperProcess);
+    // Should NOT have started any process
+    expect(sandbox.startProcess).not.toHaveBeenCalled();
+    expect(result).toBeNull();
   });
 
   it('returns existing process when port is responding and SDK process found', async () => {
