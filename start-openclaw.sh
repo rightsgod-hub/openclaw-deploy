@@ -215,6 +215,7 @@ if (process.env.OPENCLAW_GATEWAY_TOKEN) {
 if (process.env.OPENCLAW_DEV_MODE === 'true') {
     config.gateway.controlUi = config.gateway.controlUi || {};
     config.gateway.controlUi.allowInsecureAuth = true;
+    config.gateway.controlUi.allowedOrigins = ['*'];
 }
 
 // Legacy AI Gateway base URL override:
