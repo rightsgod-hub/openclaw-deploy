@@ -212,10 +212,12 @@ if (process.env.OPENCLAW_GATEWAY_TOKEN) {
     config.gateway.auth.token = process.env.OPENCLAW_GATEWAY_TOKEN;
 }
 
+// Control UI origin check: Cloudflare Access handles upstream auth, allow all origins
+config.gateway.controlUi = config.gateway.controlUi || {};
+config.gateway.controlUi.allowedOrigins = ['*'];
+
 if (process.env.OPENCLAW_DEV_MODE === 'true') {
-    config.gateway.controlUi = config.gateway.controlUi || {};
     config.gateway.controlUi.allowInsecureAuth = true;
-    config.gateway.controlUi.allowedOrigins = ['*'];
 }
 
 // Legacy AI Gateway base URL override:
@@ -323,24 +325,16 @@ echo "Gateway will be available on port 18789"
 
 echo "Dev mode: ${OPENCLAW_DEV_MODE:-false}"
 
-start_gateway() {
-    rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
-    rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
-    if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
-        openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan --token "$OPENCLAW_GATEWAY_TOKEN" &
-    else
-        openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan &
-    fi
-    echo $!
-}
-
 # Start gateway directly (ADC handles Vertex AI token refresh automatically)
 rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
 rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
 if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
     echo "Starting gateway with token auth..."
-    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan --token "$OPENCLAW_GATEWAY_TOKEN"
+    openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan --token "$OPENCLAW_GATEWAY_TOKEN" &
 else
     echo "Starting gateway with device pairing (no token)..."
-    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan
+    openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan &
 fi
+GATEWAY_PID=$!
+trap 'kill $GATEWAY_PID 2>/dev/null; wait $GATEWAY_PID 2>/dev/null' TERM INT
+wait $GATEWAY_PID
