@@ -63,13 +63,49 @@ export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Proc
  * @param env - Worker environment bindings
  * @returns The running gateway process
  */
+/**
+ * Check if gateway port is responding via curl inside the sandbox.
+ * Returns true if port 18789 is listening and accepting connections.
+ */
+export async function isGatewayPortResponding(sandbox: Sandbox): Promise<boolean> {
+  try {
+    const portCheck = await sandbox.exec(
+      'curl -so /dev/null --connect-timeout 2 http://localhost:18789/ 2>/dev/null && echo "yes" || echo "no"',
+      { timeout: 5000 },
+    );
+    return portCheck.stdout?.trim() === 'yes';
+  } catch {
+    return false;
+  }
+}
+
 export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): Promise<Process> {
   // Mount R2 storage for persistent data (non-blocking if not configured)
   // R2 is used as a backup - the startup script will restore from it on boot
   await mountR2Storage(sandbox, env);
 
+  // Port check first: if port is responding, the gateway is alive.
+  // Trust the port over the SDK process list, which can lose track of
+  // processes after exec or other process replacement scenarios.
+  const portResponding = await isGatewayPortResponding(sandbox);
+
   // Check if gateway is already running or starting
   const existingProcess = await findExistingMoltbotProcess(sandbox);
+
+  if (portResponding) {
+    console.log('[Gateway] Port 18789 is responding, gateway is running');
+    if (existingProcess) {
+      return existingProcess;
+    }
+    // Port responding but no SDK process found. This happens when the old
+    // exec-based start-openclaw.sh replaced the shell process.
+    // The gateway is healthy - do NOT kill it. Start a no-op wrapper process
+    // so we have a Process handle to return.
+    console.log('[Gateway] No SDK process found but gateway is alive, creating wrapper process');
+    const wrapper = await sandbox.startProcess('sleep infinity', {});
+    return wrapper;
+  }
+
   if (existingProcess) {
     console.log(
       'Found existing gateway process:',
@@ -112,34 +148,17 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
       const envVars = buildEnvVars(env);
       const command = '/usr/local/bin/start-openclaw.sh';
 
-      // Clean up orphaned gateway processes ONLY if port is not in use.
-      // If port 18789 is active, the gateway is running even if Sandbox SDK
-      // can't find it (e.g., after exec replaces the shell with gateway binary).
+      // Clean up orphaned processes and lock files only when port is free.
+      // If we reach here, portResponding was false so port is definitely free.
       try {
-        const portCheck = await sandbox.exec(
-          'curl -so /dev/null --connect-timeout 2 http://localhost:18789/ 2>/dev/null && echo "port_in_use" || echo "port_free"',
-          { timeout: 5000 },
+        console.log('[Gateway] Port 18789 free, cleaning up orphaned processes...');
+        await sandbox.exec(
+          'pkill -f "openclaw gateway" 2>/dev/null; sleep 2; rm -f /tmp/openclaw-start.lock /tmp/openclaw-gateway.lock /root/.openclaw/gateway.lock 2>/dev/null; true',
+          { timeout: 15000 },
         );
-        const portStatus = portCheck.stdout?.trim() || 'port_free';
-        if (portStatus === 'port_in_use') {
-          // We only reach here when findExistingMoltbotProcess returned null (no running gateway).
-          // Port occupied without a running process = zombie. Force cleanup.
-          console.log('[Gateway] Port 18789 occupied but no running gateway found, force killing...');
-          await sandbox.exec(
-            'pkill -9 -f "openclaw gateway" 2>/dev/null; pkill -9 -f "start-openclaw" 2>/dev/null; sleep 3; rm -f /tmp/openclaw-start.lock /tmp/openclaw-gateway.lock /root/.openclaw/gateway.lock 2>/dev/null; true',
-            { timeout: 15000 },
-          );
-          console.log('[Gateway] Force cleanup complete');
-        } else {
-          console.log('[Gateway] Port 18789 free, cleaning up orphaned processes...');
-          await sandbox.exec(
-            'pkill -f "openclaw gateway" 2>/dev/null; sleep 2; rm -f /tmp/openclaw-start.lock /tmp/openclaw-gateway.lock /root/.openclaw/gateway.lock 2>/dev/null; true',
-            { timeout: 15000 },
-          );
-          console.log('[Gateway] Cleanup complete');
-        }
+        console.log('[Gateway] Cleanup complete');
       } catch (e) {
-        console.log('[Gateway] Cleanup check failed (non-fatal):', e);
+        console.log('[Gateway] Cleanup failed (non-fatal):', e);
       }
 
       console.log('Starting process with command:', command);

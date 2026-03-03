@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { findExistingMoltbotProcess, ensureMoltbotGateway } from './process';
+import { findExistingMoltbotProcess, ensureMoltbotGateway, isGatewayPortResponding } from './process';
 import type { Sandbox, Process } from '@cloudflare/sandbox';
 import { createMockSandbox, suppressConsole } from '../test-utils';
 
@@ -24,6 +24,39 @@ function createFullMockProcess(overrides: Partial<Process> = {}): Process {
     ...overrides,
   } as Process;
 }
+
+describe('isGatewayPortResponding', () => {
+  beforeEach(() => {
+    suppressConsole();
+  });
+
+  it('returns true when port is responding', async () => {
+    const sandbox = {
+      exec: vi.fn().mockResolvedValue({ exitCode: 0, stdout: 'yes\n', stderr: '', command: '', durationMs: 0 }),
+    } as unknown as Sandbox;
+
+    const result = await isGatewayPortResponding(sandbox);
+    expect(result).toBe(true);
+  });
+
+  it('returns false when port is not responding', async () => {
+    const sandbox = {
+      exec: vi.fn().mockResolvedValue({ exitCode: 0, stdout: 'no\n', stderr: '', command: '', durationMs: 0 }),
+    } as unknown as Sandbox;
+
+    const result = await isGatewayPortResponding(sandbox);
+    expect(result).toBe(false);
+  });
+
+  it('returns false when exec throws', async () => {
+    const sandbox = {
+      exec: vi.fn().mockRejectedValue(new Error('timeout')),
+    } as unknown as Sandbox;
+
+    const result = await isGatewayPortResponding(sandbox);
+    expect(result).toBe(false);
+  });
+});
 
 describe('findExistingMoltbotProcess', () => {
   it('returns null when no processes exist', async () => {
@@ -172,12 +205,12 @@ describe('ensureMoltbotGateway', () => {
     } as Process;
   }
 
-  it('force kills zombie process when port 18789 is in use but no running gateway found', async () => {
-    const mockProcess = createRunningMockProcess();
+  it('does not kill gateway when port is responding (even without SDK process)', async () => {
+    const wrapperProcess = createRunningMockProcess({ id: 'wrapper', command: 'sleep infinity' });
 
     const execMock = vi.fn()
-      // 1st call: port check -> port_in_use
-      .mockResolvedValueOnce({ exitCode: 0, stdout: 'port_in_use\n', stderr: '', command: '', durationMs: 0 })
+      // 1st call: port check -> yes (port is responding)
+      .mockResolvedValueOnce({ exitCode: 0, stdout: 'yes\n', stderr: '', command: '', durationMs: 0 })
       // Any subsequent exec calls
       .mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 });
 
@@ -185,32 +218,55 @@ describe('ensureMoltbotGateway', () => {
       mountBucket: vi.fn().mockResolvedValue(undefined),
       listProcesses: vi.fn().mockResolvedValue([]),
       exec: execMock,
-      startProcess: vi.fn().mockResolvedValue(mockProcess),
+      startProcess: vi.fn().mockResolvedValue(wrapperProcess),
     } as unknown as Sandbox;
 
     const env = { Sandbox: {}, ASSETS: {}, MOLTBOT_BUCKET: {} } as any;
 
-    await ensureMoltbotGateway(sandbox, env);
+    const result = await ensureMoltbotGateway(sandbox, env);
 
-    // Port check should have been called
-    expect(execMock).toHaveBeenCalledWith(
-      expect.stringContaining('curl -so /dev/null --connect-timeout 2 http://localhost:18789/'),
-      expect.any(Object),
-    );
-
-    // pkill SHOULD be called (port in use but no running process = zombie, force kill)
+    // Port responding + no SDK process -> should create wrapper, NOT kill
     const pkillCalls = execMock.mock.calls.filter(
       (call: any[]) => typeof call[0] === 'string' && call[0].includes('pkill'),
     );
-    expect(pkillCalls).toHaveLength(1);
+    expect(pkillCalls).toHaveLength(0);
+
+    // Should have started a wrapper process
+    expect(sandbox.startProcess).toHaveBeenCalledWith('sleep infinity', {});
+    expect(result).toBe(wrapperProcess);
   });
 
-  it('runs cleanup when port 18789 is free (orphaned process)', async () => {
+  it('returns existing process when port is responding and SDK process found', async () => {
+    const gatewayProc = createRunningMockProcess({ id: 'gateway-1', command: 'start-openclaw.sh' });
+
+    const execMock = vi.fn()
+      // 1st call: port check -> yes (port is responding)
+      .mockResolvedValueOnce({ exitCode: 0, stdout: 'yes\n', stderr: '', command: '', durationMs: 0 })
+      .mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 });
+
+    const sandbox = {
+      mountBucket: vi.fn().mockResolvedValue(undefined),
+      listProcesses: vi.fn().mockResolvedValue([gatewayProc]),
+      exec: execMock,
+      startProcess: vi.fn(),
+    } as unknown as Sandbox;
+
+    const env = { Sandbox: {}, ASSETS: {}, MOLTBOT_BUCKET: {} } as any;
+
+    const result = await ensureMoltbotGateway(sandbox, env);
+
+    // Should return the existing process directly
+    expect(result).toBe(gatewayProc);
+    // Should NOT start a new process
+    expect(sandbox.startProcess).not.toHaveBeenCalled();
+  });
+
+  it('runs cleanup and starts new gateway when port is not responding', async () => {
     const mockProcess = createRunningMockProcess();
 
     const execMock = vi.fn()
-      // 1st call: port check -> port_free
-      .mockResolvedValueOnce({ exitCode: 0, stdout: 'port_free\n', stderr: '', command: '', durationMs: 0 })
+      // 1st call: port check -> no (port not responding)
+      .mockResolvedValueOnce({ exitCode: 0, stdout: 'no\n', stderr: '', command: '', durationMs: 0 })
       // 2nd call: pkill cleanup
       .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 })
       // Any subsequent exec calls
@@ -227,10 +283,16 @@ describe('ensureMoltbotGateway', () => {
 
     await ensureMoltbotGateway(sandbox, env);
 
-    // pkill should be called (port is free, so cleanup runs)
+    // pkill should be called (port is free, so cleanup runs before starting new gateway)
     const pkillCalls = execMock.mock.calls.filter(
       (call: any[]) => typeof call[0] === 'string' && call[0].includes('pkill'),
     );
     expect(pkillCalls).toHaveLength(1);
+
+    // Should have started a new gateway process
+    expect(sandbox.startProcess).toHaveBeenCalledWith(
+      '/usr/local/bin/start-openclaw.sh',
+      expect.any(Object),
+    );
   });
 });

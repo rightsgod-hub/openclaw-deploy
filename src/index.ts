@@ -26,7 +26,7 @@ import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
 import type { AppEnv, MoltbotEnv } from './types';
 import { MOLTBOT_PORT } from './config';
 import { createAccessMiddleware } from './auth';
-import { ensureMoltbotGateway, findExistingMoltbotProcess, syncToR2 } from './gateway';
+import { ensureMoltbotGateway, findExistingMoltbotProcess, isGatewayPortResponding, syncToR2 } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
 import loadingPageHtml from './assets/loading.html';
@@ -449,45 +449,33 @@ async function scheduled(
     const options = buildSandboxOptions(env);
     const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
-    let gatewayProcess = await findExistingMoltbotProcess(sandbox);
-    if (!gatewayProcess) {
-      // Fallback: check if port is listening even though no process was found.
-      // After exec replaces the shell, Sandbox SDK loses track of the process,
-      // but the gateway is still running and listening on the port.
-      let portListening = false;
-      try {
-        const portCheck = await sandbox.exec(
-          'curl -so /dev/null --connect-timeout 2 http://localhost:18789/ 2>/dev/null && echo "yes" || echo "no"',
-          { timeout: 5000 },
-        );
-        portListening = portCheck.stdout?.trim() === 'yes';
-      } catch {}
+    // Check port first: if port is responding, gateway is alive regardless of SDK process state
+    const portResponding = await isGatewayPortResponding(sandbox);
 
-      if (portListening) {
-        console.log('[cron] No process found but port 18789 is listening, may be zombie - attempting ensureMoltbotGateway...');
+    if (portResponding) {
+      console.log('[cron] Port 18789 is responding, gateway is running');
+    } else {
+      // Port not responding - try to find and verify a process, or start a new one
+      const gatewayProcess = await findExistingMoltbotProcess(sandbox);
+      if (gatewayProcess) {
+        try {
+          console.log('[cron] Verifying gateway responsiveness...');
+          await gatewayProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
+          console.log('[cron] Gateway is responsive, proceeding with sync');
+        } catch {
+          console.log('[cron] Gateway exists but port not ready, skipping sync');
+          return;
+        }
       } else {
         console.log('[cron] Gateway not running, attempting to start...');
+        try {
+          await ensureMoltbotGateway(sandbox, env);
+          console.log('[cron] Gateway started successfully');
+        } catch (startError) {
+          console.error('[cron] Failed to start gateway:', startError);
+          return;
+        }
       }
-      try {
-        await ensureMoltbotGateway(sandbox, env);
-        console.log('[cron] Gateway ensured successfully');
-      } catch (startError) {
-        console.error('[cron] Failed to start gateway:', startError);
-        return;
-      }
-    }
-
-    if (gatewayProcess) {
-      try {
-        console.log('[cron] Verifying gateway responsiveness...');
-        await gatewayProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
-        console.log('[cron] Gateway is responsive, proceeding with sync');
-      } catch (e) {
-        console.log('[cron] Gateway exists but port not ready, skipping sync');
-        return;
-      }
-    } else {
-      console.log('[cron] Gateway detected via port check, proceeding with sync');
     }
 
     // Refresh GCP access token if Vertex AI is configured
@@ -499,13 +487,10 @@ async function scheduled(
         const refreshResult = await sandbox.exec(refreshCmd, { timeout: 30000 });
         const output = refreshResult.stdout?.trim() || '';
         console.log('[cron] Token refresh result:', output || '(no output)');
-        // Force gateway to reload config from disk
-        try {
-          await sandbox.exec(`openclaw gateway call config.apply --url ws://localhost:18789 --token "${gatewayToken}"`, { timeout: 10000 });
-          console.log('[cron] config.apply triggered');
-        } catch (applyErr) {
-          console.error('[cron] config.apply failed:', applyErr);
-        }
+        // config.apply is already called inside refresh-gcp-token.sh (L84-92),
+        // which reads gateway.auth.token from openclaw.json.
+        // Do NOT call config.apply here directly — env.MOLTBOT_GATEWAY_TOKEN may be
+        // empty, causing "gateway url override requires explicit credentials" error.
       } catch (e) {
         console.error('[cron] Token refresh failed:', e);
       }
