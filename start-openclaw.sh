@@ -68,7 +68,7 @@ should_restore_from_r2() {
 if [ -f "$BACKUP_DIR/openclaw/openclaw.json" ]; then
     if should_restore_from_r2; then
         echo "Restoring from R2 backup at $BACKUP_DIR/openclaw..."
-        rsync -a --exclude='workspace/.venv' --exclude='workspace/.git' "$BACKUP_DIR/openclaw/" "$CONFIG_DIR/"
+        rsync -a --exclude='workspace/' "$BACKUP_DIR/openclaw/" "$CONFIG_DIR/"
         cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
         echo "Restored config from R2 backup"
     fi
@@ -76,7 +76,7 @@ elif [ -f "$BACKUP_DIR/clawdbot/clawdbot.json" ]; then
     # Legacy backup format — migrate .clawdbot data into .openclaw
     if should_restore_from_r2; then
         echo "Restoring from legacy R2 backup at $BACKUP_DIR/clawdbot..."
-        rsync -a --exclude='workspace/.venv' --exclude='workspace/.git' "$BACKUP_DIR/clawdbot/" "$CONFIG_DIR/"
+        rsync -a --exclude='workspace/' "$BACKUP_DIR/clawdbot/" "$CONFIG_DIR/"
         cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
         # Rename the config file if it has the old name
         if [ -f "$CONFIG_DIR/clawdbot.json" ] && [ ! -f "$CONFIG_FILE" ]; then
@@ -88,7 +88,7 @@ elif [ -f "$BACKUP_DIR/clawdbot.json" ]; then
     # Very old legacy backup format (flat structure)
     if should_restore_from_r2; then
         echo "Restoring from flat legacy R2 backup at $BACKUP_DIR..."
-        rsync -a --exclude='workspace/.venv' --exclude='workspace/.git' "$BACKUP_DIR/" "$CONFIG_DIR/"
+        rsync -a --exclude='workspace/' "$BACKUP_DIR/" "$CONFIG_DIR/"
         cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
         if [ -f "$CONFIG_DIR/clawdbot.json" ] && [ ! -f "$CONFIG_FILE" ]; then
             mv "$CONFIG_DIR/clawdbot.json" "$CONFIG_FILE"
@@ -249,6 +249,14 @@ if (!config.agents.defaults.model) config.agents.defaults.model = {};
 config.agents.defaults.model.primary = 'cf-ai-gw-google-0/gemini-3-flash-preview';
 console.log('Primary model set to: cf-ai-gw-google-0/gemini-3-flash-preview');
 
+// Workspace path: align with R2 restore location (/root/clawd)
+// Default is /root/.openclaw/workspace — override so bot reads/writes
+// to the same dir that start-openclaw.sh restores from R2.
+if (!config.agents.defaults.workspace) {
+    config.agents.defaults.workspace = '/root/clawd';
+    console.log('Workspace set to: /root/clawd');
+}
+
 // Telegram configuration
 // Overwrite entire channel object to drop stale keys from old R2 backups
 // that would fail OpenClaw's strict config validation (see #47)
@@ -281,6 +289,14 @@ if (process.env.DISCORD_BOT_TOKEN) {
         enabled: true,
         dm: dm,
         groupPolicy: 'open',
+        guilds: {
+            '*': {
+                requireMention: false,
+            },
+        },
+        eventQueue: {
+            listenerTimeout: 300000,
+        },
     };
 }
 
@@ -303,6 +319,14 @@ if (config.channels.discord && config.channels.discord.enabled) {
 // Fix ackReactionScope to prevent annoying bot reactions in DMs
 config.messages = config.messages || {};
 config.messages.ackReactionScope = "group-mentions";
+
+// Tools profile: coding enables exec, file read/write, web search, memory, etc.
+config.tools = config.tools || {};
+config.tools.profile = 'coding';
+// Disable exec approval prompt and allow all commands (no Approve dialog in Control UI)
+config.tools.exec = config.tools.exec || {};
+config.tools.exec.ask = 'off';
+config.tools.exec.security = 'full';
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration patched successfully');
@@ -330,6 +354,8 @@ echo "Dev mode: ${OPENCLAW_DEV_MODE:-false}"
 # Port check in process.ts handles SDK process tracking (port responding = gateway alive).
 rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
 rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
+# Release startup lock before exec to prevent lock inheritance by gateway process
+exec 9>&-
 if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
     echo "Starting gateway with token auth..."
     exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan --token "$OPENCLAW_GATEWAY_TOKEN"
