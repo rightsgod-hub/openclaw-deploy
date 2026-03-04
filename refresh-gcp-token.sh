@@ -39,9 +39,9 @@ sign.update(h+'.'+c);
 const sig=sign.sign(key.private_key,'base64').replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
 const jwt=h+'.'+c+'.'+sig;
 const body='grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion='+jwt;
-const req=https.request({hostname:'oauth2.googleapis.com',path:'/token',method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Content-Length':body.length}},res=>{let d='';res.on('data',c=>d+=c);res.on('end',()=>{const r=JSON.parse(d);if(r.access_token){process.stdout.write(r.access_token);}else{process.stderr.write('token error: '+d);process.exit(1);}});});
+const req=https.request({hostname:'oauth2.googleapis.com',path:'/token',method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Content-Length':body.length}},res=>{let d='';res.on('data',c=>d+=c);res.on('end',()=>{const r=JSON.parse(d);if(r.access_token){process.stdout.write(r.access_token);process.stderr.write('expires_in='+r.expires_in);}else{process.stderr.write('token error: '+d);process.exit(1);}});});
 req.write(body);req.end();
-" 2>/dev/null)
+" 2>/tmp/gcp-token-debug.log)
 
 if [ -z "$NEW_TOKEN" ]; then
     echo "ERROR: GCP token refresh failed"
@@ -83,15 +83,24 @@ try {
 # --- ゲートウェイのメモリ上の設定を強制更新 ---
 GW_TOKEN=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8'));process.stdout.write(c.gateway&&c.gateway.auth&&c.gateway.auth.token||'')}catch(e){}" 2>/dev/null)
 if [ -n "$GW_TOKEN" ]; then
-    openclaw gateway call config.apply \
+    APPLY_OUT=$(openclaw gateway call config.apply \
         --url ws://localhost:18789 \
-        --token "$GW_TOKEN" </dev/null 2>&1 | head -3 || true
-    echo "config.apply triggered"
+        --token "$GW_TOKEN" </dev/null 2>&1)
+    APPLY_RC=$?
+    echo "$APPLY_OUT" | head -3
+    if [ $APPLY_RC -eq 0 ]; then
+        echo "config.apply succeeded"
+        date +%s > "$LAST_REFRESH_FILE"
+    else
+        echo "WARNING: config.apply failed (rc=$APPLY_RC), will retry next cron"
+    fi
 else
     echo "WARNING: Could not read gateway token for config.apply"
 fi
 
-# --- 更新タイムスタンプ記録 ---
-date +%s > "$LAST_REFRESH_FILE"
+# --- expires_in をログ出力 ---
+if [ -f /tmp/gcp-token-debug.log ]; then
+    cat /tmp/gcp-token-debug.log
+fi
 
 echo "GCP token refreshed at $(date)"

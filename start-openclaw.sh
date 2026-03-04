@@ -326,15 +326,14 @@ echo "Gateway will be available on port 18789"
 echo "Dev mode: ${OPENCLAW_DEV_MODE:-false}"
 
 # Start gateway directly (ADC handles Vertex AI token refresh automatically)
+# Use exec to replace shell with gateway process — keeps process alive across DO sleep cycles.
+# Port check in process.ts handles SDK process tracking (port responding = gateway alive).
 rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
 rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
 if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
     echo "Starting gateway with token auth..."
-    openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan --token "$OPENCLAW_GATEWAY_TOKEN" &
+    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan --token "$OPENCLAW_GATEWAY_TOKEN"
 else
     echo "Starting gateway with device pairing (no token)..."
-    openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan &
+    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan
 fi
-GATEWAY_PID=$!
-trap 'kill $GATEWAY_PID 2>/dev/null; wait $GATEWAY_PID 2>/dev/null' TERM INT
-wait $GATEWAY_PID

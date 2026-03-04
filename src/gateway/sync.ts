@@ -69,6 +69,28 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
     };
   }
 
+  // Verify workspace has real content before syncing with --delete
+  // Prevents destroying R2 backup when container has empty/template workspace
+  try {
+    const identityCheck = await sandbox.exec(
+      'test -f /root/clawd/IDENTITY.md && ! grep -q "Fill this in" /root/clawd/IDENTITY.md',
+      { timeout: 5000 }
+    );
+    if (identityCheck.exitCode !== 0) {
+      return {
+        success: false,
+        error: 'Sync aborted: workspace not initialized',
+        details: 'IDENTITY.md is missing or contains template content. Skipping sync to protect R2 backup.',
+      };
+    }
+  } catch (err) {
+    return {
+      success: false,
+      error: 'Failed to verify workspace state',
+      details: err instanceof Error ? err.message : 'Unknown error',
+    };
+  }
+
   // Sync to the new openclaw/ R2 prefix (even if source is legacy .clawdbot)
   // Also sync workspace directory (excluding skills since they're synced separately)
   const syncCmd = `rsync -r --no-times --delete --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' ${configDir}/ ${R2_MOUNT_PATH}/openclaw/ && rsync -r --no-times --delete --exclude='skills' /root/clawd/ ${R2_MOUNT_PATH}/workspace/ && rsync -r --no-times --delete /root/clawd/skills/ ${R2_MOUNT_PATH}/skills/ && date -Iseconds > ${R2_MOUNT_PATH}/.last-sync`;

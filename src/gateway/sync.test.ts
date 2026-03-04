@@ -55,6 +55,21 @@ describe('syncToR2', () => {
       expect(result.success).toBe(false);
       expect(result.error).toBe('Sync aborted: no config file found');
     });
+
+    it('returns error when workspace IDENTITY.md is missing or template', async () => {
+      const { sandbox, execMock } = createMockSandbox();
+      // Calls: check openclaw.json (OK), check IDENTITY.md (FAIL - missing or template)
+      execMock
+        .mockResolvedValueOnce({ exitCode: 0, stdout: 'ok', stderr: '', command: '', durationMs: 0 })
+        .mockResolvedValueOnce({ exitCode: 1, stdout: '', stderr: '', command: '', durationMs: 0 });
+
+      const env = createMockEnvWithR2();
+
+      const result = await syncToR2(sandbox, env);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Sync aborted: workspace not initialized');
+    });
   });
 
   describe('sync execution', () => {
@@ -62,9 +77,10 @@ describe('syncToR2', () => {
       const { sandbox, execMock } = createMockSandbox();
       const timestamp = '2026-01-27T12:00:00+00:00';
 
-      // Calls: check openclaw.json, rsync, cat timestamp
+      // Calls: check openclaw.json, check IDENTITY.md, rsync, cat timestamp
       execMock
         .mockResolvedValueOnce({ exitCode: 0, stdout: 'ok', stderr: '', command: '', durationMs: 0 })
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 })
         .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 })
         .mockResolvedValueOnce({ exitCode: 0, stdout: timestamp, stderr: '', command: '', durationMs: 0 });
 
@@ -79,9 +95,10 @@ describe('syncToR2', () => {
     it('returns error when rsync fails (no timestamp created)', async () => {
       const { sandbox, execMock } = createMockSandbox();
 
-      // Calls: check openclaw.json, rsync (fails), cat timestamp (empty)
+      // Calls: check openclaw.json, check IDENTITY.md, rsync (fails), cat timestamp (empty)
       execMock
         .mockResolvedValueOnce({ exitCode: 0, stdout: 'ok', stderr: '', command: '', durationMs: 0 })
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 })
         .mockResolvedValueOnce({ exitCode: 1, stdout: '', stderr: '', command: '', durationMs: 0 })
         .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 });
 
@@ -97,8 +114,10 @@ describe('syncToR2', () => {
       const { sandbox, execMock } = createMockSandbox();
       const timestamp = '2026-01-27T12:00:00+00:00';
 
+      // Calls: check openclaw.json, check IDENTITY.md, rsync, cat timestamp
       execMock
         .mockResolvedValueOnce({ exitCode: 0, stdout: 'ok', stderr: '', command: '', durationMs: 0 })
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 })
         .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 })
         .mockResolvedValueOnce({ exitCode: 0, stdout: timestamp, stderr: '', command: '', durationMs: 0 });
 
@@ -106,8 +125,8 @@ describe('syncToR2', () => {
 
       await syncToR2(sandbox, env);
 
-      // Second call should be rsync to openclaw/ R2 prefix
-      const rsyncCall = execMock.mock.calls[1][0];
+      // Third call should be rsync to openclaw/ R2 prefix
+      const rsyncCall = execMock.mock.calls[2][0];
       expect(rsyncCall).toContain('rsync');
       expect(rsyncCall).toContain('--no-times');
       expect(rsyncCall).toContain('--delete');
