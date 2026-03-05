@@ -275,19 +275,13 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
 }
 
 // Discord configuration
-// Discord uses a nested dm object: dm.policy, dm.allowFrom (per DiscordDmConfig)
+// New schema: dmPolicy and allowFrom are top-level (not nested under dm)
 if (process.env.DISCORD_BOT_TOKEN) {
-    const dmPolicy = process.env.DISCORD_DM_POLICY || 'pairing';
-    const dm = { policy: dmPolicy };
-    if (process.env.DISCORD_DM_ALLOW_FROM) {
-        dm.allowFrom = process.env.DISCORD_DM_ALLOW_FROM.split(',');
-    } else if (dmPolicy === 'open') {
-        dm.allowFrom = ['*'];
-    }
-    config.channels.discord = {
+    const dmPolicy = process.env.DISCORD_DM_POLICY || 'open';
+    const discordConfig = {
         token: process.env.DISCORD_BOT_TOKEN,
         enabled: true,
-        dm: dm,
+        dmPolicy: dmPolicy,
         groupPolicy: 'open',
         guilds: {
             '*': {
@@ -298,6 +292,12 @@ if (process.env.DISCORD_BOT_TOKEN) {
             listenerTimeout: 300000,
         },
     };
+    if (process.env.DISCORD_DM_ALLOW_FROM) {
+        discordConfig.allowFrom = process.env.DISCORD_DM_ALLOW_FROM.split(',');
+    } else if (dmPolicy === 'open') {
+        discordConfig.allowFrom = ['*'];
+    }
+    config.channels.discord = discordConfig;
 }
 
 // Slack configuration
