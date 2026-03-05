@@ -262,6 +262,19 @@ adminApi.post('/gateway/restart', async (c) => {
   const sandbox = c.get('sandbox');
 
   try {
+    // Step 1: Graceful shutdown (works even for untracked gateway processes)
+    const gatewayToken = c.env.MOLTBOT_GATEWAY_TOKEN;
+    try {
+      const stopCmd = gatewayToken
+        ? `openclaw gateway stop --url ws://localhost:18789 --token ${gatewayToken}`
+        : `openclaw gateway stop --url ws://localhost:18789`;
+      await sandbox.exec(stopCmd, { timeout: 5000 });
+      console.log('Graceful gateway stop succeeded');
+      await new Promise((r) => setTimeout(r, 2000));
+    } catch (stopErr) {
+      console.log('Graceful gateway stop failed (continuing with kill):', stopErr);
+    }
+
     // Find and kill the existing gateway process
     const existingProcess = await findExistingMoltbotProcess(sandbox);
 
@@ -292,6 +305,22 @@ adminApi.post('/gateway/restart', async (c) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return c.json({ error: errorMessage }, 500);
+  }
+});
+
+// Force reset: destroy the entire container (clears all processes including zombies)
+adminApi.post('/gateway/force-reset', async (c) => {
+  const sandbox = c.get('sandbox');
+  try {
+    console.log('Force resetting container via sandbox.destroy()');
+    await sandbox.destroy();
+    return c.json({
+      success: true,
+      message: 'Container destroyed. Gateway will restart automatically on next request.',
+    });
+  } catch (error) {
+    console.error('Error during force reset:', error);
+    return c.json({ success: false, error: String(error) }, 500);
   }
 });
 

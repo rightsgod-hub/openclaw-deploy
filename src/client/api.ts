@@ -167,3 +167,15 @@ export async function removeDevice(deviceId: string): Promise<RemoveDeviceRespon
     method: 'DELETE',
   });
 }
+
+export interface ForceResetResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+}
+
+export async function forceReset(): Promise<ForceResetResponse> {
+  return apiRequest<ForceResetResponse>('/gateway/force-reset', {
+    method: 'POST',
+  });
+}

@@ -5,6 +5,7 @@ import {
   approveAllDevices,
   removeDevice,
   restartGateway,
+  forceReset,
   getStorageStatus,
   triggerSync,
   listProcessesInfo,
@@ -14,6 +15,7 @@ import {
   type DeviceListResponse,
   type StorageStatusResponse,
   type ProcessInfo,
+  type ForceResetResponse,
 } from '../api';
 import './AdminPage.css';
 
@@ -56,6 +58,7 @@ export default function AdminPage() {
   const [error, setError] = useState<string | null>(null);
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [restartInProgress, setRestartInProgress] = useState(false);
+  const [forceResetInProgress, setForceResetInProgress] = useState(false);
   const [syncInProgress, setSyncInProgress] = useState(false);
   const [processInfo, setProcessInfo] = useState<{ total: number; processes: ProcessInfo[] } | null>(
     null,
@@ -181,6 +184,30 @@ export default function AdminPage() {
     }
   };
 
+  const handleForceReset = async () => {
+    if (
+      !confirm(
+        'WARNING: This will destroy the entire container. All zombie processes will be cleared and the gateway will restart from R2 backup. Continue?',
+      )
+    ) {
+      return;
+    }
+    setForceResetInProgress(true);
+    try {
+      const result: ForceResetResponse = await forceReset();
+      if (result.success) {
+        setError(null);
+        alert('Container destroyed. Gateway will restart automatically.');
+      } else {
+        setError(result.error || 'Failed to force reset');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to force reset');
+    } finally {
+      setForceResetInProgress(false);
+    }
+  };
+
   const handleLoadProcessInfo = async () => {
     setProcessInfoLoading(true);
     try {
@@ -284,10 +311,18 @@ export default function AdminPage() {
             <button
               className="btn btn-danger"
               onClick={handleRestartGateway}
-              disabled={restartInProgress}
+              disabled={restartInProgress || forceResetInProgress}
             >
               {restartInProgress && <ButtonSpinner />}
               {restartInProgress ? 'Restarting...' : 'Restart Gateway'}
+            </button>
+            <button
+              className="btn btn-danger"
+              onClick={handleForceReset}
+              disabled={forceResetInProgress || restartInProgress}
+            >
+              {forceResetInProgress && <ButtonSpinner />}
+              {forceResetInProgress ? 'Resetting...' : 'Force Reset ⚠️'}
             </button>
           </div>
         </div>
