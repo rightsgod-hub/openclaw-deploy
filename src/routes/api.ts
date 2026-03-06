@@ -505,6 +505,9 @@ adminApi.post('/token-refresh', async (c) => {
     // exit 2 = config.apply failed, need gateway restart
     if (exitCode === 2) {
       console.log('config.apply failed, killing all + restarting gateway...');
+      // Clear refresh timestamp so start-openclaw.sh's refresh won't skip
+      // (R2 restore overwrites the fresh token in config file)
+      await sandbox.exec('rm -f /tmp/gcp-token-last-refresh', { timeout: 5000 }).catch(() => {});
       await killAllGatewayProcesses(sandbox);
       const bootPromise = ensureMoltbotGateway(sandbox, c.env).catch((err) => {
         console.error('Gateway restart after token refresh failed:', err);

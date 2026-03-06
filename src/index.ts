@@ -494,6 +494,9 @@ async function scheduled(
         if (exitCode === 2) {
           console.log('[cron] config.apply failed, restarting gateway to load new token...');
           try {
+            // Clear refresh timestamp so start-openclaw.sh's refresh-gcp-token.sh
+            // won't skip due to threshold (R2 restore overwrites the fresh token)
+            await sandbox.exec('rm -f /tmp/gcp-token-last-refresh', { timeout: 5000 });
             await killAllGatewayProcesses(sandbox);
             await ensureMoltbotGateway(sandbox, env);
             console.log('[cron] Gateway restarted with fresh GCP token');
