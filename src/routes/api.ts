@@ -3,6 +3,7 @@ import type { AppEnv } from '../types';
 import { createAccessMiddleware } from '../auth';
 import {
   ensureMoltbotGateway,
+  killAllGatewayProcesses,
   mountR2Storage,
   syncToR2,
 } from '../gateway';
@@ -24,37 +25,6 @@ const api = new Hono<AppEnv>();
  */
 const adminApi = new Hono<AppEnv>();
 
-/** Kill ALL gateway processes and clean lock files before starting a new one. */
-async function killAllGatewayProcesses(sandbox: any): Promise<void> {
-  // 1. Kill all SDK-tracked running processes
-  try {
-    const processes = await sandbox.listProcesses();
-    for (const proc of processes) {
-      if (proc.status === 'running' || proc.status === 'starting') {
-        try { await proc.kill(); } catch { /* already dead */ }
-      }
-    }
-  } catch { /* ignore */ }
-
-  // 2. Kill OS-level gateway processes (catches exec'd processes SDK can't track)
-  try {
-    await sandbox.exec(
-      'pkill -9 -f "openclaw gateway" 2>/dev/null; pkill -9 -f "start-openclaw" 2>/dev/null; true',
-      { timeout: 5000 },
-    );
-  } catch { /* ignore */ }
-
-  // 3. Remove lock files
-  try {
-    await sandbox.exec(
-      'rm -f /tmp/openclaw-start.lock /tmp/openclaw-gateway.lock /root/.openclaw/gateway.lock',
-      { timeout: 5000 },
-    );
-  } catch { /* ignore */ }
-
-  // 4. Wait for processes to die
-  await new Promise((r) => setTimeout(r, 2000));
-}
 
 // Middleware: Verify Cloudflare Access JWT for all admin routes
 adminApi.use('*', createAccessMiddleware({ type: 'json' }));

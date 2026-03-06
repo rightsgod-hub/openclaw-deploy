@@ -84,6 +84,34 @@ export async function isGatewayPortResponding(sandbox: Sandbox): Promise<boolean
   }
 }
 
+/** Kill ALL gateway processes (SDK + OS level) and clean lock files. */
+export async function killAllGatewayProcesses(sandbox: Sandbox): Promise<void> {
+  // 1. Kill all SDK-tracked processes
+  try {
+    const processes = await sandbox.listProcesses();
+    for (const proc of processes) {
+      if (proc.status === 'running' || proc.status === 'starting') {
+        try { await proc.kill(); } catch { /* already dead */ }
+      }
+    }
+  } catch { /* ignore */ }
+  // 2. OS-level kill
+  try {
+    await sandbox.exec(
+      'pkill -9 -f "openclaw gateway" 2>/dev/null; pkill -9 -f "start-openclaw" 2>/dev/null; true',
+      { timeout: 5000 },
+    );
+  } catch { /* ignore */ }
+  // 3. Remove lock files
+  try {
+    await sandbox.exec(
+      'rm -f /tmp/openclaw-start.lock /tmp/openclaw-gateway.lock /root/.openclaw/gateway.lock',
+      { timeout: 5000 },
+    );
+  } catch { /* ignore */ }
+  await new Promise((r) => setTimeout(r, 2000));
+}
+
 export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): Promise<Process | null> {
   // Mount R2 storage for persistent data (non-blocking if not configured)
   // R2 is used as a backup - the startup script will restore from it on boot
@@ -152,18 +180,11 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
       const envVars = buildEnvVars(env);
       const command = '/usr/local/bin/start-openclaw.sh';
 
-      // Clean up orphaned processes and lock files only when port is free.
+      // Kill ALL orphaned processes and clean lock files before starting.
       // If we reach here, portResponding was false so port is definitely free.
-      try {
-        console.log('[Gateway] Port 18789 free, cleaning up orphaned processes...');
-        await sandbox.exec(
-          'pkill -f "openclaw gateway" 2>/dev/null; sleep 2; rm -f /tmp/openclaw-start.lock /tmp/openclaw-gateway.lock /root/.openclaw/gateway.lock 2>/dev/null; true',
-          { timeout: 15000 },
-        );
-        console.log('[Gateway] Cleanup complete');
-      } catch (e) {
-        console.log('[Gateway] Cleanup failed (non-fatal):', e);
-      }
+      console.log('[Gateway] Port 18789 free, killing all orphaned processes...');
+      await killAllGatewayProcesses(sandbox);
+      console.log('[Gateway] Cleanup complete');
 
       console.log('Starting process with command:', command);
       console.log('Environment vars being passed:', Object.keys(envVars));

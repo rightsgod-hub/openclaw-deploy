@@ -26,7 +26,7 @@ import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
 import type { AppEnv, MoltbotEnv } from './types';
 import { MOLTBOT_PORT } from './config';
 import { createAccessMiddleware } from './auth';
-import { ensureMoltbotGateway, findExistingMoltbotProcess, isGatewayPortResponding, mountR2Storage, resetR2MountCache, syncToR2 } from './gateway';
+import { ensureMoltbotGateway, findExistingMoltbotProcess, isGatewayPortResponding, killAllGatewayProcesses, mountR2Storage, resetR2MountCache, syncToR2 } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
 import loadingPageHtml from './assets/loading.html';
@@ -494,11 +494,7 @@ async function scheduled(
         if (exitCode === 2) {
           console.log('[cron] config.apply failed, restarting gateway to load new token...');
           try {
-            const existingProc = await findExistingMoltbotProcess(sandbox);
-            if (existingProc) {
-              await existingProc.kill();
-              await new Promise((r) => setTimeout(r, 2000));
-            }
+            await killAllGatewayProcesses(sandbox);
             await ensureMoltbotGateway(sandbox, env);
             console.log('[cron] Gateway restarted with fresh GCP token');
           } catch (restartErr) {
