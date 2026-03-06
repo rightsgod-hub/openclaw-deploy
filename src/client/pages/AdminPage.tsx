@@ -10,6 +10,7 @@ import {
   getStorageStatus,
   triggerSync,
   listProcessesInfo,
+  refreshToken,
   AuthError,
   type PendingDevice,
   type PairedDevice,
@@ -17,6 +18,7 @@ import {
   type StorageStatusResponse,
   type ProcessInfo,
   type ForceResetResponse,
+  type TokenRefreshResponse,
 } from '../api';
 import './AdminPage.css';
 
@@ -66,6 +68,7 @@ export default function AdminPage() {
     null,
   );
   const [processInfoLoading, setProcessInfoLoading] = useState(false);
+  const [tokenRefreshInProgress, setTokenRefreshInProgress] = useState(false);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -276,6 +279,23 @@ export default function AdminPage() {
     }
   };
 
+  const handleRefreshToken = async () => {
+    setTokenRefreshInProgress(true);
+    try {
+      const result: TokenRefreshResponse = await refreshToken();
+      if (result.success) {
+        setError(null);
+        alert(result.message || 'トークン更新完了');
+      } else {
+        setError(result.error || 'Token refresh failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to refresh token');
+    } finally {
+      setTokenRefreshInProgress(false);
+    }
+  };
+
   return (
     <div className="devices-page">
       {error && (
@@ -337,6 +357,14 @@ export default function AdminPage() {
         <div className="section-header">
           <h2>Gateway Controls</h2>
           <div className="header-actions">
+            <button
+              className="btn btn-primary"
+              onClick={handleRefreshToken}
+              disabled={tokenRefreshInProgress}
+            >
+              {tokenRefreshInProgress && <ButtonSpinner />}
+              {tokenRefreshInProgress ? 'Refreshing...' : 'Refresh Token'}
+            </button>
             <button
               className="btn btn-secondary"
               onClick={handleLoadProcessInfo}

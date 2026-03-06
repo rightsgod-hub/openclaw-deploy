@@ -62,27 +62,41 @@ export class AuthError extends Error {
   }
 }
 
-async function apiRequest<T>(path: string, options: globalThis.RequestInit = {}): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  } as globalThis.RequestInit);
+async function apiRequest<T>(path: string, options: globalThis.RequestInit = {}, timeoutMs = 30000): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (response.status === 401) {
-    throw new AuthError('Unauthorized - please log in via Cloudflare Access');
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      signal: controller.signal,
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+    } as globalThis.RequestInit);
+
+    clearTimeout(timeoutId);
+
+    if (response.status === 401) {
+      throw new AuthError('Unauthorized - please log in via Cloudflare Access');
+    }
+
+    const data = (await response.json()) as T & { error?: string };
+
+    if (!response.ok) {
+      throw new Error(data.error || `API error: ${response.status}`);
+    }
+
+    return data;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('リクエストがタイムアウトしました（30秒）。サーバーに問題がある可能性があります。');
+    }
+    throw err;
   }
-
-  const data = (await response.json()) as T & { error?: string };
-
-  if (!response.ok) {
-    throw new Error(data.error || `API error: ${response.status}`);
-  }
-
-  return data;
 }
 
 export async function listDevices(): Promise<DeviceListResponse> {
@@ -201,4 +215,17 @@ export async function destroyContainer(skipSync = false): Promise<DestroyContain
     throw new AuthError('Unauthorized');
   }
   return response.json() as Promise<DestroyContainerResponse>;
+}
+
+export interface TokenRefreshResponse {
+  success: boolean;
+  message?: string;
+  gatewayRestarted?: boolean;
+  error?: string;
+}
+
+export async function refreshToken(): Promise<TokenRefreshResponse> {
+  return apiRequest<TokenRefreshResponse>('/token-refresh', {
+    method: 'POST',
+  }, 60000);
 }

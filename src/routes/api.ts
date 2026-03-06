@@ -3,7 +3,6 @@ import type { AppEnv } from '../types';
 import { createAccessMiddleware } from '../auth';
 import {
   ensureMoltbotGateway,
-  findExistingMoltbotProcess,
   mountR2Storage,
   syncToR2,
 } from '../gateway';
@@ -24,6 +23,38 @@ const api = new Hono<AppEnv>();
  * Admin API routes - all protected by Cloudflare Access
  */
 const adminApi = new Hono<AppEnv>();
+
+/** Kill ALL gateway processes and clean lock files before starting a new one. */
+async function killAllGatewayProcesses(sandbox: any): Promise<void> {
+  // 1. Kill all SDK-tracked running processes
+  try {
+    const processes = await sandbox.listProcesses();
+    for (const proc of processes) {
+      if (proc.status === 'running' || proc.status === 'starting') {
+        try { await proc.kill(); } catch { /* already dead */ }
+      }
+    }
+  } catch { /* ignore */ }
+
+  // 2. Kill OS-level gateway processes (catches exec'd processes SDK can't track)
+  try {
+    await sandbox.exec(
+      'pkill -9 -f "openclaw gateway" 2>/dev/null; pkill -9 -f "start-openclaw" 2>/dev/null; true',
+      { timeout: 5000 },
+    );
+  } catch { /* ignore */ }
+
+  // 3. Remove lock files
+  try {
+    await sandbox.exec(
+      'rm -f /tmp/openclaw-start.lock /tmp/openclaw-gateway.lock /root/.openclaw/gateway.lock',
+      { timeout: 5000 },
+    );
+  } catch { /* ignore */ }
+
+  // 4. Wait for processes to die
+  await new Promise((r) => setTimeout(r, 2000));
+}
 
 // Middleware: Verify Cloudflare Access JWT for all admin routes
 adminApi.use('*', createAccessMiddleware({ type: 'json' }));
@@ -257,39 +288,15 @@ adminApi.post('/storage/sync', async (c) => {
   }
 });
 
-// POST /api/admin/gateway/restart - Kill the current gateway and start a new one
+// POST /api/admin/gateway/restart - Kill ALL processes and start a new gateway
 adminApi.post('/gateway/restart', async (c) => {
   const sandbox = c.get('sandbox');
 
   try {
-    // Step 1: Graceful shutdown (works even for untracked gateway processes)
-    const gatewayToken = c.env.MOLTBOT_GATEWAY_TOKEN;
-    try {
-      const stopCmd = gatewayToken
-        ? `openclaw gateway stop --url ws://localhost:18789 --token ${gatewayToken}`
-        : `openclaw gateway stop --url ws://localhost:18789`;
-      await sandbox.exec(stopCmd, { timeout: 5000 });
-      console.log('Graceful gateway stop succeeded');
-      await new Promise((r) => setTimeout(r, 2000));
-    } catch (stopErr) {
-      console.log('Graceful gateway stop failed (continuing with kill):', stopErr);
-    }
+    console.log('Restart Gateway: killing all processes and cleaning up...');
+    await killAllGatewayProcesses(sandbox);
 
-    // Find and kill the existing gateway process
-    const existingProcess = await findExistingMoltbotProcess(sandbox);
-
-    if (existingProcess) {
-      console.log('Killing existing gateway process:', existingProcess.id);
-      try {
-        await existingProcess.kill();
-      } catch (killErr) {
-        console.error('Error killing process:', killErr);
-      }
-      // Wait a moment for the process to die
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-
-    // Start a new gateway in the background
+    console.log('Restart Gateway: starting new gateway...');
     const bootPromise = ensureMoltbotGateway(sandbox, c.env).catch((err) => {
       console.error('Gateway restart failed:', err);
     });
@@ -297,10 +304,7 @@ adminApi.post('/gateway/restart', async (c) => {
 
     return c.json({
       success: true,
-      message: existingProcess
-        ? 'Gateway process killed, new instance starting...'
-        : 'No existing process found, starting new instance...',
-      previousProcessId: existingProcess?.id,
+      message: '全プロセス停止完了。ゲートウェイを再起動中です。',
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -308,29 +312,13 @@ adminApi.post('/gateway/restart', async (c) => {
   }
 });
 
-// Stage 1: Kill zombie gateway processes and restart (no container destruction)
+// POST /api/admin/gateway/force-reset - Kill all zombies + restart (no container destruction)
 adminApi.post('/gateway/force-reset', async (c) => {
   const sandbox = c.get('sandbox');
   try {
-    // Step 1: Kill all gateway processes via pgrep/kill (works even when SDK process tracking is stale)
-    console.log('Force reset: killing zombie gateway processes...');
-    const killResult = await sandbox.exec(
-      'pgrep -f "openclaw gateway" | xargs kill -9 2>/dev/null; true',
-      { timeout: 10000 },
-    );
-    console.log('Force reset: kill result:', killResult.stdout, killResult.stderr);
+    console.log('Force reset: killing all processes and cleaning up...');
+    await killAllGatewayProcesses(sandbox);
 
-    // Step 2: Remove stale lock files that may prevent restart
-    console.log('Force reset: removing lock files...');
-    await sandbox.exec(
-      'rm -f /tmp/openclaw-start.lock /tmp/openclaw-gateway.lock /root/.openclaw/gateway.lock',
-      { timeout: 5000 },
-    );
-
-    // Step 3: Wait briefly for processes to terminate
-    await new Promise((r) => setTimeout(r, 2000));
-
-    // Step 4: Start a fresh gateway in the background
     console.log('Force reset: starting new gateway...');
     const bootPromise = ensureMoltbotGateway(sandbox, c.env).catch((err) => {
       console.error('Force reset: gateway restart failed:', err);
@@ -339,7 +327,7 @@ adminApi.post('/gateway/force-reset', async (c) => {
 
     return c.json({
       success: true,
-      message: 'Zombie processes killed, lock files removed, new gateway starting. Container preserved.',
+      message: '全プロセス停止・ロックファイル削除完了。ゲートウェイを再起動中です。',
     });
   } catch (error) {
     console.error('Error during force reset:', error);
@@ -523,6 +511,54 @@ try {
   }
 });
 
+// POST /api/admin/token-refresh - Refresh GCP token + restart gateway to apply
+adminApi.post('/token-refresh', async (c) => {
+  const sandbox = c.get('sandbox');
+
+  if (!c.env.GCP_SERVICE_ACCOUNT_KEY) {
+    return c.json({ success: false, error: 'GCP/Vertex AI is not configured' }, 400);
+  }
+
+  try {
+    console.log('Token refresh triggered from Admin UI');
+    const gatewayToken = c.env.MOLTBOT_GATEWAY_TOKEN || '';
+    const refreshCmd = `OPENCLAW_GATEWAY_TOKEN="${gatewayToken}" bash /usr/local/bin/refresh-gcp-token.sh`;
+    const refreshResult = await sandbox.exec(refreshCmd, { timeout: 20000 });
+    const output = refreshResult.stdout?.trim() || '';
+    const exitCode = refreshResult.exitCode ?? 0;
+    console.log('Token refresh result (exit=' + exitCode + '):', output);
+
+    if (exitCode === 1) {
+      return c.json({ success: false, error: 'トークン取得に失敗: ' + output }, 500);
+    }
+
+    // exit 2 = config.apply failed, need gateway restart
+    if (exitCode === 2) {
+      console.log('config.apply failed, killing all + restarting gateway...');
+      await killAllGatewayProcesses(sandbox);
+      const bootPromise = ensureMoltbotGateway(sandbox, c.env).catch((err) => {
+        console.error('Gateway restart after token refresh failed:', err);
+      });
+      c.executionCtx.waitUntil(bootPromise);
+
+      return c.json({
+        success: true,
+        message: 'トークン更新完了。ゲートウェイを再起動中です（30〜60秒で復旧）。',
+        gatewayRestarted: true,
+      });
+    }
+
+    return c.json({
+      success: true,
+      message: 'トークン更新・反映完了。',
+      gatewayRestarted: false,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ success: false, error: errorMessage }, 500);
+  }
+});
+
 // DELETE /api/admin/processes/all - Kill all running processes (emergency cleanup)
 adminApi.delete('/processes/all', async (c) => {
   const sandbox = c.get('sandbox');
@@ -545,6 +581,41 @@ adminApi.delete('/processes/all', async (c) => {
     return c.json({ killed: killed.length, killedIds: killed, errors });
   } catch (error) {
     return c.json({ error: String(error) }, 500);
+  }
+});
+
+// GET /api/admin/token-status - Get GCP token status
+adminApi.get('/token-status', async (c) => {
+  const sandbox = c.get('sandbox');
+  const hasGcp = !!c.env.GCP_SERVICE_ACCOUNT_KEY;
+
+  if (!hasGcp) {
+    return c.json({ configured: false, message: 'GCP/Vertex AI is not configured' });
+  }
+
+  try {
+    const result = await sandbox.exec(
+      'cat /tmp/gcp-token-last-refresh 2>/dev/null || echo "0"',
+      { timeout: 5000 },
+    );
+    const lastRefreshEpoch = parseInt(result.stdout?.trim() || '0', 10);
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    const elapsed = nowEpoch - lastRefreshEpoch;
+    // GCP tokens are valid for 3600 seconds (1 hour)
+    const tokenLifetime = 3600;
+    const remaining = Math.max(0, tokenLifetime - elapsed);
+
+    return c.json({
+      configured: true,
+      lastRefreshEpoch,
+      lastRefreshTime: lastRefreshEpoch > 0 ? new Date(lastRefreshEpoch * 1000).toISOString() : null,
+      elapsedSeconds: elapsed,
+      remainingSeconds: remaining,
+      expired: remaining === 0,
+      status: remaining === 0 ? 'expired' : remaining < 600 ? 'expiring_soon' : 'valid',
+    });
+  } catch {
+    return c.json({ configured: true, error: 'Failed to check token status' }, 500);
   }
 });
 

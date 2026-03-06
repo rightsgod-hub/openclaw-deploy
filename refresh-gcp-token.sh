@@ -82,21 +82,37 @@ try {
 
 # --- ゲートウェイのメモリ上の設定を強制更新 ---
 GW_TOKEN=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8'));process.stdout.write(c.gateway&&c.gateway.auth&&c.gateway.auth.token||'')}catch(e){}" 2>/dev/null)
+APPLY_SUCCESS=0
 if [ -n "$GW_TOKEN" ]; then
+    # Try with --raw parameter first (OpenClaw 2026.3.x+ requires it)
     APPLY_OUT=$(openclaw gateway call config.apply \
         --url ws://localhost:18789 \
-        --token "$GW_TOKEN" </dev/null 2>&1)
+        --token "$GW_TOKEN" \
+        --raw "$(cat /root/.openclaw/openclaw.json)" </dev/null 2>&1)
     APPLY_RC=$?
-    echo "$APPLY_OUT" | head -3
     if [ $APPLY_RC -eq 0 ]; then
-        echo "config.apply succeeded"
-        date +%s > "$LAST_REFRESH_FILE"
+        echo "config.apply succeeded (with --raw)"
+        APPLY_SUCCESS=1
     else
-        echo "WARNING: config.apply failed (rc=$APPLY_RC), will retry next cron"
+        # Fallback: try without --raw (older OpenClaw versions)
+        APPLY_OUT=$(openclaw gateway call config.apply \
+            --url ws://localhost:18789 \
+            --token "$GW_TOKEN" </dev/null 2>&1)
+        APPLY_RC=$?
+        if [ $APPLY_RC -eq 0 ]; then
+            echo "config.apply succeeded (without --raw)"
+            APPLY_SUCCESS=1
+        else
+            echo "WARNING: config.apply failed with both methods (rc=$APPLY_RC)"
+            echo "$APPLY_OUT" | head -3
+        fi
     fi
 else
     echo "WARNING: Could not read gateway token for config.apply"
 fi
+
+# Always write timestamp - token IS refreshed in the file regardless of config.apply
+date +%s > "$LAST_REFRESH_FILE"
 
 # --- expires_in をログ出力 ---
 if [ -f /tmp/gcp-token-debug.log ]; then
@@ -104,3 +120,12 @@ if [ -f /tmp/gcp-token-debug.log ]; then
 fi
 
 echo "GCP token refreshed at $(date)"
+
+# Exit code signals cron handler:
+# 0 = fully applied to running gateway
+# 2 = token in file but gateway needs restart to load it
+if [ "$APPLY_SUCCESS" -eq 1 ]; then
+    exit 0
+else
+    exit 2
+fi

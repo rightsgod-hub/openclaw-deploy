@@ -484,13 +484,27 @@ async function scheduled(
         console.log('[cron] Refreshing GCP access token...');
         const gatewayToken = env.MOLTBOT_GATEWAY_TOKEN || '';
         const refreshCmd = `OPENCLAW_GATEWAY_TOKEN="${gatewayToken}" bash /usr/local/bin/refresh-gcp-token.sh`;
-        const refreshResult = await sandbox.exec(refreshCmd, { timeout: 30000 });
+        const refreshResult = await sandbox.exec(refreshCmd, { timeout: 20000 });
         const output = refreshResult.stdout?.trim() || '';
-        console.log('[cron] Token refresh result:', output || '(no output)');
-        // config.apply is already called inside refresh-gcp-token.sh (L84-92),
-        // which reads gateway.auth.token from openclaw.json.
-        // Do NOT call config.apply here directly — env.MOLTBOT_GATEWAY_TOKEN may be
-        // empty, causing "gateway url override requires explicit credentials" error.
+        const exitCode = refreshResult.exitCode ?? 0;
+        console.log('[cron] Token refresh result (exit=' + exitCode + '):', output || '(no output)');
+
+        // Exit code 2 = token written to file but config.apply failed
+        // Gateway must be restarted to pick up the new token from disk
+        if (exitCode === 2) {
+          console.log('[cron] config.apply failed, restarting gateway to load new token...');
+          try {
+            const existingProc = await findExistingMoltbotProcess(sandbox);
+            if (existingProc) {
+              await existingProc.kill();
+              await new Promise((r) => setTimeout(r, 2000));
+            }
+            await ensureMoltbotGateway(sandbox, env);
+            console.log('[cron] Gateway restarted with fresh GCP token');
+          } catch (restartErr) {
+            console.error('[cron] Gateway restart after token refresh failed:', restartErr);
+          }
+        }
       } catch (e) {
         console.error('[cron] Token refresh failed:', e);
       }
