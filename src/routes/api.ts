@@ -308,18 +308,96 @@ adminApi.post('/gateway/restart', async (c) => {
   }
 });
 
-// Force reset: destroy the entire container (clears all processes including zombies)
+// Stage 1: Kill zombie gateway processes and restart (no container destruction)
 adminApi.post('/gateway/force-reset', async (c) => {
   const sandbox = c.get('sandbox');
   try {
-    console.log('Force resetting container via sandbox.destroy()');
-    await sandbox.destroy();
+    // Step 1: Kill all gateway processes via pgrep/kill (works even when SDK process tracking is stale)
+    console.log('Force reset: killing zombie gateway processes...');
+    const killResult = await sandbox.exec(
+      'pgrep -f "openclaw gateway" | xargs kill -9 2>/dev/null; true',
+      { timeout: 10000 },
+    );
+    console.log('Force reset: kill result:', killResult.stdout, killResult.stderr);
+
+    // Step 2: Remove stale lock files that may prevent restart
+    console.log('Force reset: removing lock files...');
+    await sandbox.exec(
+      'rm -f /tmp/openclaw-start.lock /tmp/openclaw-gateway.lock /root/.openclaw/gateway.lock',
+      { timeout: 5000 },
+    );
+
+    // Step 3: Wait briefly for processes to terminate
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // Step 4: Start a fresh gateway in the background
+    console.log('Force reset: starting new gateway...');
+    const bootPromise = ensureMoltbotGateway(sandbox, c.env).catch((err) => {
+      console.error('Force reset: gateway restart failed:', err);
+    });
+    c.executionCtx.waitUntil(bootPromise);
+
     return c.json({
       success: true,
-      message: 'Container destroyed. Gateway will restart automatically on next request.',
+      message: 'Zombie processes killed, lock files removed, new gateway starting. Container preserved.',
     });
   } catch (error) {
     console.error('Error during force reset:', error);
+    return c.json({ success: false, error: String(error) }, 500);
+  }
+});
+
+// Stage 2: Destroy the entire container (with optional skipSync for FUSE hang scenarios)
+adminApi.post('/gateway/destroy', async (c) => {
+  const sandbox = c.get('sandbox');
+  const skipSync = c.req.query('skipSync') === 'true';
+
+  try {
+    if (skipSync) {
+      // User explicitly chose to skip sync (e.g., FUSE is hung)
+      console.log('Container destroy: skipSync=true, skipping R2 sync...');
+    } else {
+      // Attempt R2 sync before destruction
+      console.log('Container destroy: syncing data to R2 before destroy...');
+      try {
+        const syncResult = await syncToR2(sandbox, c.env);
+        if (!syncResult.success) {
+          console.error('Container destroy: R2 sync failed:', syncResult.error);
+          const baseUrl = new URL(c.req.url);
+          const retryUrl = `${baseUrl.origin}/api/admin/gateway/destroy?skipSync=true`;
+          return c.json({
+            success: false,
+            error: 'R2 sync failed. Container NOT destroyed to prevent data loss.',
+            syncError: syncResult.error,
+            hint: 'If FUSE is hung and sync will never succeed, retry with skipSync=true to force destroy.',
+            retryUrl,
+          }, 500);
+        }
+        console.log('Container destroy: R2 sync OK');
+      } catch (syncError) {
+        console.error('Container destroy: R2 sync threw:', syncError);
+        const baseUrl = new URL(c.req.url);
+        const retryUrl = `${baseUrl.origin}/api/admin/gateway/destroy?skipSync=true`;
+        return c.json({
+          success: false,
+          error: `R2 sync error: ${String(syncError)}`,
+          hint: 'If FUSE is hung and sync will never succeed, retry with skipSync=true to force destroy.',
+          retryUrl,
+        }, 500);
+      }
+    }
+
+    console.log('Container destroy: destroying container...');
+    await sandbox.destroy();
+    return c.json({
+      success: true,
+      message: skipSync
+        ? 'Container destroyed WITHOUT R2 sync. Data since last successful sync may be lost.'
+        : 'Container destroyed after successful R2 sync. Gateway will restart on next request.',
+      skipSync,
+    });
+  } catch (error) {
+    console.error('Error during container destroy:', error);
     return c.json({ success: false, error: String(error) }, 500);
   }
 });

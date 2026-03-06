@@ -112,8 +112,24 @@ if [ -d "$BACKUP_DIR/workspace" ] && [ "$(ls -A $BACKUP_DIR/workspace 2>/dev/nul
     # デプロイされたばかりのテンプレートを消去して、R2の記憶で上書きする
     rm -rf "${WORKSPACE_DIR:?}"/*
     # .venv（Python仮想環境、1668ファイル）と.gitを除外してFUSEタイムアウトを防止
-    rsync -a --exclude='.venv' --exclude='.git' "$BACKUP_DIR/workspace/" "$WORKSPACE_DIR/"
-    echo "Restored workspace from R2 backup"
+    # FUSEマウント直後はI/Oが不安定な場合があるため、最大3回リトライ
+    RESTORE_SUCCESS=0
+    for RETRY in 1 2 3; do
+        if rsync -a --exclude='.venv' --exclude='.git' "$BACKUP_DIR/workspace/" "$WORKSPACE_DIR/"; then
+            echo "Restored workspace from R2 backup (attempt $RETRY)"
+            RESTORE_SUCCESS=1
+            break
+        else
+            echo "WARNING: Workspace restore attempt $RETRY failed (exit code: $?)"
+            if [ "$RETRY" -lt 3 ]; then
+                echo "Waiting 10 seconds before retry..."
+                sleep 10
+            fi
+        fi
+    done
+    if [ "$RESTORE_SUCCESS" -eq 0 ]; then
+        echo "ERROR: All 3 workspace restore attempts failed. Starting with deployed template."
+    fi
 fi
 
 # Restore skills from R2 backup if available (only if R2 is newer)

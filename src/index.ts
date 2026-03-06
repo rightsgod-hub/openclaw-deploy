@@ -26,7 +26,7 @@ import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
 import type { AppEnv, MoltbotEnv } from './types';
 import { MOLTBOT_PORT } from './config';
 import { createAccessMiddleware } from './auth';
-import { ensureMoltbotGateway, findExistingMoltbotProcess, isGatewayPortResponding, syncToR2 } from './gateway';
+import { ensureMoltbotGateway, findExistingMoltbotProcess, isGatewayPortResponding, mountR2Storage, resetR2MountCache, syncToR2 } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
 import loadingPageHtml from './assets/loading.html';
@@ -493,6 +493,28 @@ async function scheduled(
         // empty, causing "gateway url override requires explicit credentials" error.
       } catch (e) {
         console.error('[cron] Token refresh failed:', e);
+      }
+    }
+
+    // FUSE hang detection: test actual I/O with 3-second timeout
+    try {
+      await sandbox.exec('ls /data/moltbot/ > /dev/null 2>&1', { timeout: 3000 });
+      console.log('[cron] FUSE health check: OK');
+    } catch {
+      console.warn('[cron] FUSE health check FAILED - attempting remount');
+      try {
+        await sandbox.exec('fusermount -uz /data/moltbot', { timeout: 5000 });
+        console.log('[cron] fusermount -uz completed');
+      } catch {
+        console.warn('[cron] fusermount -uz failed (may already be unmounted)');
+      }
+      resetR2MountCache();
+      const remounted = await mountR2Storage(sandbox, env);
+      if (remounted) {
+        console.log('[cron] R2 remount successful');
+      } else {
+        console.error('[cron] R2 remount failed, skipping sync');
+        return;
       }
     }
 
