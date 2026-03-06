@@ -51,6 +51,8 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   if (env.USE_VERTEX_AI) envVars.USE_VERTEX_AI = env.USE_VERTEX_AI;
   if (env.GCP_PROJECT_ID) envVars.GCP_PROJECT_ID = env.GCP_PROJECT_ID;
   if (env.GCP_SERVICE_ACCOUNT_KEY) envVars.GCP_SERVICE_ACCOUNT_KEY = env.GCP_SERVICE_ACCOUNT_KEY;
+  if (env.GA4_SERVICE_ACCOUNT_ID) envVars.GA4_SERVICE_ACCOUNT_ID = env.GA4_SERVICE_ACCOUNT_ID;
+  if (env.GA4_SERVICE_ACCOUNT_KEY) envVars.GA4_SERVICE_ACCOUNT_KEY = env.GA4_SERVICE_ACCOUNT_KEY;
   if (env.CDP_SECRET) envVars.CDP_SECRET = env.CDP_SECRET;
   if (env.WORKER_URL) envVars.WORKER_URL = env.WORKER_URL;
 

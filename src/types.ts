@@ -42,6 +42,8 @@ export interface MoltbotEnv {
   USE_VERTEX_AI?: string;
   GCP_PROJECT_ID?: string;
   GCP_SERVICE_ACCOUNT_KEY?: string;
+  GA4_SERVICE_ACCOUNT_ID?: string;
+  GA4_SERVICE_ACCOUNT_KEY?: string;
   // Browser Rendering binding for CDP shim
   BROWSER?: Fetcher;
   CDP_SECRET?: string; // Shared secret for CDP endpoint authentication
