@@ -6,6 +6,7 @@ import {
   removeDevice,
   restartGateway,
   forceReset,
+  destroyContainer,
   getStorageStatus,
   triggerSync,
   listProcessesInfo,
@@ -59,6 +60,7 @@ export default function AdminPage() {
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [restartInProgress, setRestartInProgress] = useState(false);
   const [forceResetInProgress, setForceResetInProgress] = useState(false);
+  const [destroyInProgress, setDestroyInProgress] = useState(false);
   const [syncInProgress, setSyncInProgress] = useState(false);
   const [processInfo, setProcessInfo] = useState<{ total: number; processes: ProcessInfo[] } | null>(
     null,
@@ -187,7 +189,7 @@ export default function AdminPage() {
   const handleForceReset = async () => {
     if (
       !confirm(
-        'WARNING: This will destroy the entire container. All zombie processes will be cleared and the gateway will restart from R2 backup. Continue?',
+        'ゾンビプロセスを強制停止してゲートウェイを再起動します。コンテナは破壊されません。続行しますか？',
       )
     ) {
       return;
@@ -197,7 +199,7 @@ export default function AdminPage() {
       const result: ForceResetResponse = await forceReset();
       if (result.success) {
         setError(null);
-        alert('Container destroyed. Gateway will restart automatically.');
+        alert('ゾンビプロセスを停止しました。ゲートウェイを再起動中です。');
       } else {
         setError(result.error || 'Failed to force reset');
       }
@@ -205,6 +207,41 @@ export default function AdminPage() {
       setError(err instanceof Error ? err.message : 'Failed to force reset');
     } finally {
       setForceResetInProgress(false);
+    }
+  };
+
+  const handleDestroyContainer = async (skipSync = false) => {
+    if (
+      !skipSync &&
+      !confirm(
+        'WARNING: コンテナを完全に破壊します。R2バックアップへのsyncを試みた後、コンテナを破壊します。次回リクエスト時にR2からリストアされます。\n\n本当に実行しますか？',
+      )
+    ) {
+      return;
+    }
+    setDestroyInProgress(true);
+    try {
+      const result = await destroyContainer(skipSync);
+      if (result.success) {
+        setError(null);
+        alert(result.message || 'Container destroyed.');
+      } else if (result.retryUrl) {
+        if (
+          confirm(
+            `R2 sync failed: ${result.error}\n\nFUSEハング等でsyncできない場合、syncをスキップしてコンテナを破壊できます。skipSyncで実行しますか？`,
+          )
+        ) {
+          await handleDestroyContainer(true);
+        } else {
+          setError(result.error || 'Destroy cancelled');
+        }
+      } else {
+        setError(result.error || 'Failed to destroy container');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to destroy container');
+    } finally {
+      setDestroyInProgress(false);
     }
   };
 
@@ -311,7 +348,7 @@ export default function AdminPage() {
             <button
               className="btn btn-danger"
               onClick={handleRestartGateway}
-              disabled={restartInProgress || forceResetInProgress}
+              disabled={restartInProgress || forceResetInProgress || destroyInProgress}
             >
               {restartInProgress && <ButtonSpinner />}
               {restartInProgress ? 'Restarting...' : 'Restart Gateway'}
@@ -319,44 +356,43 @@ export default function AdminPage() {
             <button
               className="btn btn-danger"
               onClick={handleForceReset}
-              disabled={forceResetInProgress || restartInProgress}
+              disabled={forceResetInProgress || restartInProgress || destroyInProgress}
             >
               {forceResetInProgress && <ButtonSpinner />}
               {forceResetInProgress ? 'Resetting...' : 'Force Reset ⚠️'}
             </button>
+            <button
+              className="btn btn-danger"
+              onClick={() => handleDestroyContainer()}
+              disabled={destroyInProgress || restartInProgress || forceResetInProgress}
+            >
+              {destroyInProgress && <ButtonSpinner />}
+              {destroyInProgress ? 'Destroying...' : 'Destroy Container ⚠️'}
+            </button>
           </div>
         </div>
         <p className="hint">
-          <strong>Show Processes:</strong> Display current container processes for debugging.
+          <strong>Show Processes:</strong> コンテナ内のプロセス一覧を表示。
           <br />
-          <strong>Restart Gateway:</strong> Restart the gateway to apply configuration changes or
-          recover from errors.
+          <strong>Restart Gateway:</strong> ゲートウェイを通常再起動。設定変更の反映やエラー復旧に使用。
+          <br />
+          <strong>Force Reset:</strong> ゾンビプロセスを強制停止してゲートウェイを再起動。コンテナは維持。
+          <br />
+          <strong>Destroy Container:</strong> コンテナを完全に破壊。R2バックアップから復元されます。最終手段。
         </p>
 
         {processInfo && (
           <div className="process-info" style={{ marginTop: '1rem' }}>
             <h3>Container Processes ({processInfo.total} total)</h3>
-            <div
-              style={{
-                maxHeight: '400px',
-                overflow: 'auto',
-                background: '#f5f5f5',
-                padding: '1rem',
-                borderRadius: '4px',
-                fontSize: '12px',
-                fontFamily: 'monospace',
-              }}
-            >
+            <div className="process-info-panel">
               {processInfo.processes.map((proc) => (
-                <div
-                  key={proc.id}
-                  style={{ marginBottom: '0.5rem', borderBottom: '1px solid #ddd' }}
-                >
+                <div key={proc.id} className="process-item">
                   <div>
-                    <strong>ID:</strong> {proc.id} | <strong>Status:</strong> {proc.status}
+                    <strong>ID:</strong> {proc.id} | <strong>Status:</strong>{' '}
+                    <span className={`status-${proc.status}`}>{proc.status}</span>
                     {proc.exitCode !== undefined && ` | Exit: ${proc.exitCode}`}
                   </div>
-                  <div style={{ color: '#666' }}>{proc.command}</div>
+                  <div className="process-command">{proc.command}</div>
                 </div>
               ))}
             </div>

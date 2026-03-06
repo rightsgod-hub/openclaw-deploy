@@ -334,6 +334,35 @@
   filter: brightness(1.1);
 }
 
+/* Process info panel */
+.process-info-panel {
+  max-height: 400px;
+  overflow: auto;
+  background: var(--bg-color);
+  border: 1px solid var(--border-color);
+  padding: 1rem;
+  border-radius: var(--border-radius);
+  font-size: 12px;
+  font-family: monospace;
+}
+
+.process-item {
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.process-command {
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+.status-running { color: var(--success-color); }
+.status-failed { color: var(--error-color); }
+.status-killed { color: var(--warning-color); }
+.status-completed { color: var(--text-secondary); }
+
 /* Responsive adjustments */
 @media (max-width: 640px) {
   .devices-section {
