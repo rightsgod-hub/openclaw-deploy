@@ -74,8 +74,10 @@ export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Proc
  */
 export async function isGatewayPortResponding(sandbox: Sandbox): Promise<boolean> {
   try {
+    // Use TCP-level check (no -f flag) so any HTTP response means port is alive.
+    // /healthz does not exist in OpenClaw — using it with -f always returned false.
     const portCheck = await sandbox.exec(
-      'curl -sf --connect-timeout 2 http://localhost:18789/healthz 2>/dev/null && echo "yes" || echo "no"',
+      'curl -s --connect-timeout 2 --max-time 3 -o /dev/null http://localhost:18789/ 2>/dev/null && echo "yes" || echo "no"',
       { timeout: 5000 },
     );
     return portCheck.stdout?.trim() === 'yes';
