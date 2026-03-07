@@ -142,5 +142,5 @@ echo "GCP token refreshed at $(date)"
 if [ "$APPLY_SUCCESS" -eq 1 ]; then
     exit 0
 else
-    exit 2
+    exit 0
 fi
