@@ -100,7 +100,7 @@ export async function killAllGatewayProcesses(sandbox: Sandbox): Promise<void> {
   // 2. OS-level kill
   try {
     await sandbox.exec(
-      'pkill -9 -f "openclaw gateway" 2>/dev/null; pkill -9 -f "start-openclaw" 2>/dev/null; true',
+      'PID=$(ss -tlnp | grep ":18789" | grep -oP \'pid=\\K[0-9]+\' | head -1); [ -n "$PID" ] && kill -9 "$PID" 2>/dev/null; pkill -9 -f "openclaw" 2>/dev/null; pkill -9 -f "start-openclaw" 2>/dev/null; true',
       { timeout: 5000 },
     );
   } catch { /* ignore */ }

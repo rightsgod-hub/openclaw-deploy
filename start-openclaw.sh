@@ -13,8 +13,8 @@
 exec 9>/tmp/openclaw-start.lock
 flock -n 9 || { echo "Another start-openclaw.sh is already running, exiting."; exit 0; }
 
-if pgrep -f "openclaw gateway" > /dev/null 2>&1; then
-    echo "OpenClaw gateway is already running, exiting."
+if ss -tlnp 2>/dev/null | grep -q ":18789"; then
+    echo "OpenClaw gateway is already running on port 18789, exiting."
     exit 0
 fi
 
