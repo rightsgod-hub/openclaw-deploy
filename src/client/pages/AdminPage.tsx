@@ -5,7 +5,6 @@ import {
   approveAllDevices,
   removeDevice,
   restartGateway,
-  forceReset,
   destroyContainer,
   getStorageStatus,
   triggerSync,
@@ -17,7 +16,6 @@ import {
   type DeviceListResponse,
   type StorageStatusResponse,
   type ProcessInfo,
-  type ForceResetResponse,
   type TokenRefreshResponse,
 } from '../api';
 import './AdminPage.css';
@@ -61,7 +59,6 @@ export default function AdminPage() {
   const [error, setError] = useState<string | null>(null);
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [restartInProgress, setRestartInProgress] = useState(false);
-  const [forceResetInProgress, setForceResetInProgress] = useState(false);
   const [destroyInProgress, setDestroyInProgress] = useState(false);
   const [syncInProgress, setSyncInProgress] = useState(false);
   const [processInfo, setProcessInfo] = useState<{ total: number; processes: ProcessInfo[] } | null>(
@@ -186,30 +183,6 @@ export default function AdminPage() {
       setError(err instanceof Error ? err.message : 'Failed to restart gateway');
     } finally {
       setRestartInProgress(false);
-    }
-  };
-
-  const handleForceReset = async () => {
-    if (
-      !confirm(
-        'ゾンビプロセスを強制停止してゲートウェイを再起動します。コンテナは破壊されません。続行しますか？',
-      )
-    ) {
-      return;
-    }
-    setForceResetInProgress(true);
-    try {
-      const result: ForceResetResponse = await forceReset();
-      if (result.success) {
-        setError(null);
-        alert('ゾンビプロセスを停止しました。ゲートウェイを再起動中です。');
-      } else {
-        setError(result.error || 'Failed to force reset');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to force reset');
-    } finally {
-      setForceResetInProgress(false);
     }
   };
 
@@ -376,23 +349,15 @@ export default function AdminPage() {
             <button
               className="btn btn-danger"
               onClick={handleRestartGateway}
-              disabled={restartInProgress || forceResetInProgress || destroyInProgress}
+              disabled={restartInProgress || destroyInProgress}
             >
               {restartInProgress && <ButtonSpinner />}
               {restartInProgress ? 'Restarting...' : 'Restart Gateway'}
             </button>
             <button
               className="btn btn-danger"
-              onClick={handleForceReset}
-              disabled={forceResetInProgress || restartInProgress || destroyInProgress}
-            >
-              {forceResetInProgress && <ButtonSpinner />}
-              {forceResetInProgress ? 'Resetting...' : 'Force Reset ⚠️'}
-            </button>
-            <button
-              className="btn btn-danger"
               onClick={() => handleDestroyContainer()}
-              disabled={destroyInProgress || restartInProgress || forceResetInProgress}
+              disabled={destroyInProgress || restartInProgress}
             >
               {destroyInProgress && <ButtonSpinner />}
               {destroyInProgress ? 'Destroying...' : 'Destroy Container ⚠️'}
@@ -403,8 +368,6 @@ export default function AdminPage() {
           <strong>Show Processes:</strong> コンテナ内のプロセス一覧を表示。
           <br />
           <strong>Restart Gateway:</strong> ゲートウェイを通常再起動。設定変更の反映やエラー復旧に使用。
-          <br />
-          <strong>Force Reset:</strong> ゾンビプロセスを強制停止してゲートウェイを再起動。コンテナは維持。
           <br />
           <strong>Destroy Container:</strong> コンテナを完全に破壊。R2バックアップから復元されます。最終手段。
         </p>

@@ -282,29 +282,6 @@ adminApi.post('/gateway/restart', async (c) => {
   }
 });
 
-// POST /api/admin/gateway/force-reset - Kill all zombies + restart (no container destruction)
-adminApi.post('/gateway/force-reset', async (c) => {
-  const sandbox = c.get('sandbox');
-  try {
-    console.log('Force reset: killing all processes and cleaning up...');
-    await killAllGatewayProcesses(sandbox);
-
-    console.log('Force reset: starting new gateway...');
-    const bootPromise = ensureMoltbotGateway(sandbox, c.env).catch((err) => {
-      console.error('Force reset: gateway restart failed:', err);
-    });
-    c.executionCtx.waitUntil(bootPromise);
-
-    return c.json({
-      success: true,
-      message: '全プロセス停止・ロックファイル削除完了。ゲートウェイを再起動中です。',
-    });
-  } catch (error) {
-    console.error('Error during force reset:', error);
-    return c.json({ success: false, error: String(error) }, 500);
-  }
-});
-
 // Stage 2: Destroy the entire container (with optional skipSync for FUSE hang scenarios)
 adminApi.post('/gateway/destroy', async (c) => {
   const sandbox = c.get('sandbox');
