@@ -55,6 +55,9 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   if (env.GA4_SERVICE_ACCOUNT_KEY) envVars.GA4_SERVICE_ACCOUNT_KEY = env.GA4_SERVICE_ACCOUNT_KEY;
   if (env.CDP_SECRET) envVars.CDP_SECRET = env.CDP_SECRET;
   if (env.WORKER_URL) envVars.WORKER_URL = env.WORKER_URL;
+  if (env.GWS_CLIENT_ID) envVars.GWS_CLIENT_ID = env.GWS_CLIENT_ID;
+  if (env.GWS_CLIENT_SECRET) envVars.GWS_CLIENT_SECRET = env.GWS_CLIENT_SECRET;
+  if (env.GWS_REFRESH_TOKEN) envVars.GWS_REFRESH_TOKEN = env.GWS_REFRESH_TOKEN;
 
   return envVars;
 }

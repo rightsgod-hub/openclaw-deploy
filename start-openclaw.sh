@@ -132,6 +132,23 @@ if [ -d "$BACKUP_DIR/workspace" ] && [ "$(ls -A $BACKUP_DIR/workspace 2>/dev/nul
     fi
 fi
 
+# Write Google Workspace OAuth credentials for gws CLI
+if [ -n "$GWS_CLIENT_ID" ] && [ -n "$GWS_CLIENT_SECRET" ] && [ -n "$GWS_REFRESH_TOKEN" ]; then
+    mkdir -p /root/.config/gws
+    cat > /root/.config/gws/credentials.json << GWSCREDS
+{
+  "type": "authorized_user",
+  "client_id": "$GWS_CLIENT_ID",
+  "client_secret": "$GWS_CLIENT_SECRET",
+  "refresh_token": "$GWS_REFRESH_TOKEN"
+}
+GWSCREDS
+    # Also set as Application Default Credentials
+    mkdir -p /root/.config/gcloud
+    cp /root/.config/gws/credentials.json /root/.config/gcloud/application_default_credentials.json
+    echo "Google Workspace credentials configured"
+fi
+
 # Restore skills from R2 backup if available (only if R2 is newer)
 SKILLS_DIR="/root/clawd/skills"
 if [ -d "$BACKUP_DIR/skills" ] && [ "$(ls -A $BACKUP_DIR/skills 2>/dev/null)" ]; then
