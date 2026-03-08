@@ -104,7 +104,7 @@ try {
         APPLY_OUT=$(openclaw gateway call config.apply \
             --url ws://localhost:18789 \
             --token "$GW_TOKEN" \
-            --raw "$RAW_PAYLOAD" </dev/null 2>&1)
+            --params "$RAW_PAYLOAD" </dev/null 2>&1)
         APPLY_RC=$?
         if [ $APPLY_RC -eq 0 ]; then
             echo "config.apply succeeded"
