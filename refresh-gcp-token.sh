@@ -84,42 +84,34 @@ try {
 GW_TOKEN=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8'));process.stdout.write(c.gateway&&c.gateway.auth&&c.gateway.auth.token||'')}catch(e){}" 2>/dev/null)
 APPLY_SUCCESS=0
 if [ -n "$GW_TOKEN" ]; then
-    # models セクションのみ抽出（discord/gateway セクションを除外）
-    MODELS_ONLY=$(node -e "
+    # ConfigApplyParamsSchema: { raw: NonEmptyString } — rawはJSON文字列として渡す必要がある
+    # models セクションのみ抽出してJSON文字列にエスケープ
+    RAW_PAYLOAD=$(node -e "
 try {
   const fs = require('fs');
   const config = JSON.parse(fs.readFileSync('/root/.openclaw/openclaw.json', 'utf8'));
-  process.stdout.write(JSON.stringify({ models: config.models || {} }));
+  const modelsObj = { models: config.models || {} };
+  // config.apply requires { raw: '<json-string>' }
+  process.stdout.write(JSON.stringify({ raw: JSON.stringify(modelsObj) }));
 } catch(e) {
   process.stderr.write('extract failed: ' + e.message);
   process.exit(1);
 }
 " 2>/tmp/models-extract-debug.log)
-    if [ -z "$MODELS_ONLY" ]; then
-        echo "WARNING: Failed to extract models section, skipping config.apply"
+    if [ -z "$RAW_PAYLOAD" ]; then
+        echo "WARNING: Failed to build config.apply payload, skipping"
     else
-        # Try with --raw parameter first (OpenClaw 2026.3.x+ requires it)
         APPLY_OUT=$(openclaw gateway call config.apply \
             --url ws://localhost:18789 \
             --token "$GW_TOKEN" \
-            --raw "$MODELS_ONLY" </dev/null 2>&1)
+            --raw "$RAW_PAYLOAD" </dev/null 2>&1)
         APPLY_RC=$?
         if [ $APPLY_RC -eq 0 ]; then
-            echo "config.apply succeeded (with --raw, models only)"
+            echo "config.apply succeeded"
             APPLY_SUCCESS=1
         else
-            # Fallback: try without --raw (older OpenClaw versions)
-            APPLY_OUT=$(openclaw gateway call config.apply \
-                --url ws://localhost:18789 \
-                --token "$GW_TOKEN" </dev/null 2>&1)
-            APPLY_RC=$?
-            if [ $APPLY_RC -eq 0 ]; then
-                echo "config.apply succeeded (without --raw)"
-                APPLY_SUCCESS=1
-            else
-                echo "WARNING: config.apply failed with both methods (rc=$APPLY_RC)"
-                echo "$APPLY_OUT" | head -3
-            fi
+            echo "WARNING: config.apply failed (rc=$APPLY_RC)"
+            echo "$APPLY_OUT" | head -3
         fi
     fi
 else
