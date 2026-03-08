@@ -84,34 +84,47 @@ try {
 GW_TOKEN=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8'));process.stdout.write(c.gateway&&c.gateway.auth&&c.gateway.auth.token||'')}catch(e){}" 2>/dev/null)
 APPLY_SUCCESS=0
 if [ -n "$GW_TOKEN" ]; then
-    # ConfigApplyParamsSchema: { raw: NonEmptyString } — rawはJSON文字列として渡す必要がある
-    # models セクションのみ抽出してJSON文字列にエスケープ
-    RAW_PAYLOAD=$(node -e "
+    # Step 1: config.get でbaseHash取得（config.applyの必須パラメータ）
+    CONFIG_GET_OUT=$(openclaw gateway call config.get \
+        --url ws://localhost:18789 \
+        --token "$GW_TOKEN" \
+        --json </dev/null 2>/tmp/config-get-debug.log)
+    if [ -z "$CONFIG_GET_OUT" ]; then
+        echo "WARNING: config.get failed, skipping config.apply"
+        cat /tmp/config-get-debug.log | head -3
+    else
+        # Step 2: baseHash + full config (discord/gateway除外) でペイロード構築
+        RAW_PAYLOAD=$(node -e "
 try {
   const fs = require('fs');
+  const getResult = JSON.parse(process.argv[1]);
+  const baseHash = getResult.hash;
+  if (!baseHash) { process.stderr.write('no hash in config.get response\n'); process.exit(1); }
   const config = JSON.parse(fs.readFileSync('/root/.openclaw/openclaw.json', 'utf8'));
-  const modelsObj = { models: config.models || {} };
-  // config.apply requires { raw: '<json-string>' }
-  process.stdout.write(JSON.stringify({ raw: JSON.stringify(modelsObj) }));
+  delete config.discord;
+  delete config.gateway;
+  process.stdout.write(JSON.stringify({ raw: JSON.stringify(config), baseHash: baseHash }));
 } catch(e) {
   process.stderr.write('extract failed: ' + e.message);
   process.exit(1);
 }
-" 2>/tmp/models-extract-debug.log)
-    if [ -z "$RAW_PAYLOAD" ]; then
-        echo "WARNING: Failed to build config.apply payload, skipping"
-    else
-        APPLY_OUT=$(openclaw gateway call config.apply \
-            --url ws://localhost:18789 \
-            --token "$GW_TOKEN" \
-            --params "$RAW_PAYLOAD" </dev/null 2>&1)
-        APPLY_RC=$?
-        if [ $APPLY_RC -eq 0 ]; then
-            echo "config.apply succeeded"
-            APPLY_SUCCESS=1
+" "$CONFIG_GET_OUT" 2>/tmp/models-extract-debug.log)
+        if [ -z "$RAW_PAYLOAD" ]; then
+            echo "WARNING: Failed to build config.apply payload, skipping"
+            cat /tmp/models-extract-debug.log | head -3
         else
-            echo "WARNING: config.apply failed (rc=$APPLY_RC)"
-            echo "$APPLY_OUT" | head -3
+            APPLY_OUT=$(openclaw gateway call config.apply \
+                --url ws://localhost:18789 \
+                --token "$GW_TOKEN" \
+                --params "$RAW_PAYLOAD" </dev/null 2>&1)
+            APPLY_RC=$?
+            if [ $APPLY_RC -eq 0 ]; then
+                echo "config.apply succeeded"
+                APPLY_SUCCESS=1
+            else
+                echo "WARNING: config.apply failed (rc=$APPLY_RC)"
+                echo "$APPLY_OUT" | head -3
+            fi
         fi
     fi
 else
