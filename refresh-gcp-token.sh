@@ -48,13 +48,22 @@ if [ -z "$NEW_TOKEN" ]; then
     exit 1
 fi
 
-# --- openclaw.json更新 ---
-node -e "
+# --- GW_TOKEN取得（disk書き込み前に取得）---
+GW_TOKEN=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8'));process.stdout.write(c.gateway&&c.gateway.auth&&c.gateway.auth.token||'')}catch(e){}" 2>/dev/null)
+
+# --- openclaw.json更新 + baseHash計算（disk書き込み前にSHA256計算してconfig.get廃止）---
+APPLY_PAYLOAD=$(node -e "
+const crypto = require('crypto');
 const fs = require('fs');
 const configPath = '/root/.openclaw/openclaw.json';
+const token = process.argv[1];
 try {
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    const token = process.argv[1];
+    // 変更前のrawを読み込みSHA256計算（サーバーのin-memory snapshotHashと一致）
+    const rawBefore = fs.readFileSync(configPath, 'utf8');
+    const baseHash = crypto.createHash('sha256').update(rawBefore).digest('hex');
+
+    // tokenをメモリ上で更新
+    const config = JSON.parse(rawBefore);
     if (!config.models) config.models = {};
     if (!config.models.providers) config.models.providers = {};
     if (!config.models.providers['cf-ai-gw-google-0']) {
@@ -72,60 +81,42 @@ try {
         }
         config.models.providers['cf-ai-gw-google-0'].apiKey = token;
     }
+
+    // diskに書き込み
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    console.log('Config updated with refreshed GCP token');
+
+    // config.apply用ペイロード（discord/gateway除外）
+    const applyConfig = Object.assign({}, config);
+    delete applyConfig.discord;
+    delete applyConfig.gateway;
+    process.stdout.write(JSON.stringify({ raw: JSON.stringify(applyConfig), baseHash: baseHash }));
 } catch(e) {
-    console.error('Failed to update config:', e.message);
+    process.stderr.write('Failed: ' + e.message + '\n');
     process.exit(1);
 }
-" "$NEW_TOKEN"
+" "$NEW_TOKEN" 2>/tmp/config-update-debug.log)
 
-# --- ゲートウェイのメモリ上の設定を強制更新 ---
-GW_TOKEN=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8'));process.stdout.write(c.gateway&&c.gateway.auth&&c.gateway.auth.token||'')}catch(e){}" 2>/dev/null)
+if [ -z "$APPLY_PAYLOAD" ]; then
+    echo "ERROR: Config update failed"
+    cat /tmp/config-update-debug.log | head -3
+    exit 1
+fi
+echo "Config updated with refreshed GCP token"
+
+# --- ゲートウェイのメモリ上の設定を強制更新（config.getなし）---
 APPLY_SUCCESS=0
 if [ -n "$GW_TOKEN" ]; then
-    # Step 1: config.get でbaseHash取得（config.applyの必須パラメータ）
-    CONFIG_GET_OUT=$(openclaw gateway call config.get \
+    APPLY_OUT=$(openclaw gateway call config.apply \
         --url ws://localhost:18789 \
         --token "$GW_TOKEN" \
-        --json </dev/null 2>/tmp/config-get-debug.log)
-    if [ -z "$CONFIG_GET_OUT" ]; then
-        echo "WARNING: config.get failed, skipping config.apply"
-        cat /tmp/config-get-debug.log | head -3
+        --params "$APPLY_PAYLOAD" </dev/null 2>&1)
+    APPLY_RC=$?
+    if [ $APPLY_RC -eq 0 ]; then
+        echo "config.apply succeeded"
+        APPLY_SUCCESS=1
     else
-        # Step 2: baseHash + full config (discord/gateway除外) でペイロード構築
-        RAW_PAYLOAD=$(node -e "
-try {
-  const fs = require('fs');
-  const getResult = JSON.parse(process.argv[1]);
-  const baseHash = getResult.hash;
-  if (!baseHash) { process.stderr.write('no hash in config.get response\n'); process.exit(1); }
-  const config = JSON.parse(fs.readFileSync('/root/.openclaw/openclaw.json', 'utf8'));
-  delete config.discord;
-  delete config.gateway;
-  process.stdout.write(JSON.stringify({ raw: JSON.stringify(config), baseHash: baseHash }));
-} catch(e) {
-  process.stderr.write('extract failed: ' + e.message);
-  process.exit(1);
-}
-" "$CONFIG_GET_OUT" 2>/tmp/models-extract-debug.log)
-        if [ -z "$RAW_PAYLOAD" ]; then
-            echo "WARNING: Failed to build config.apply payload, skipping"
-            cat /tmp/models-extract-debug.log | head -3
-        else
-            APPLY_OUT=$(openclaw gateway call config.apply \
-                --url ws://localhost:18789 \
-                --token "$GW_TOKEN" \
-                --params "$RAW_PAYLOAD" </dev/null 2>&1)
-            APPLY_RC=$?
-            if [ $APPLY_RC -eq 0 ]; then
-                echo "config.apply succeeded"
-                APPLY_SUCCESS=1
-            else
-                echo "WARNING: config.apply failed (rc=$APPLY_RC)"
-                echo "$APPLY_OUT" | head -3
-            fi
-        fi
+        echo "WARNING: config.apply failed (rc=$APPLY_RC)"
+        echo "$APPLY_OUT" | head -3
     fi
 else
     echo "WARNING: Could not read gateway token for config.apply"

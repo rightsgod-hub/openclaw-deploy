@@ -132,6 +132,12 @@ if [ -d "$BACKUP_DIR/workspace" ] && [ "$(ls -A $BACKUP_DIR/workspace 2>/dev/nul
     fi
 fi
 
+# MEMORY.mdが存在しない場合は空ファイル作成（AIのEdit操作でファイル不在エラーを防ぐ）
+if [ ! -f "$WORKSPACE_DIR/MEMORY.md" ]; then
+    echo "WARNING: MEMORY.md not found after workspace restore. Creating empty placeholder."
+    touch "$WORKSPACE_DIR/MEMORY.md"
+fi
+
 # Write Google Workspace OAuth credentials for gws CLI
 if [ -n "$GWS_CLIENT_ID" ] && [ -n "$GWS_CLIENT_SECRET" ] && [ -n "$GWS_REFRESH_TOKEN" ]; then
     mkdir -p /root/.config/gws
@@ -360,6 +366,26 @@ config.tools.profile = 'coding';
 config.tools.exec = config.tools.exec || {};
 config.tools.exec.ask = 'off';
 config.tools.exec.security = 'full';
+
+// Moonshot(Kimi) provider追加（既存プロバイダーは維持）
+if (process.env.MOONSHOT_API_KEY) {
+    if (!config.models) config.models = {};
+    if (!config.models.providers) config.models.providers = {};
+    config.models.providers['moonshot'] = {
+        api: 'openai-completions',
+        baseUrl: 'https://api.moonshot.ai/v1',
+        apiKey: process.env.MOONSHOT_API_KEY,
+        models: [{
+            id: 'kimi-k2.5',
+            name: 'Kimi K2.5',
+            reasoning: false,
+            input: ['text', 'image'],
+            contextWindow: 256000,
+            maxTokens: 8192
+        }]
+    };
+    console.log('[patch] moonshot provider added');
+}
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration patched successfully');
