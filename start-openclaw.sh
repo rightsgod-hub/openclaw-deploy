@@ -105,7 +105,24 @@ fi
 # CRITICAL: Always restore from R2 when data exists to prevent deploy-overwrite
 # This includes IDENTITY.md, USER.md, MEMORY.md, memory/, and assets/
 WORKSPACE_DIR="/root/clawd"
-if [ -d "$BACKUP_DIR/workspace" ] && [ "$(ls -A $BACKUP_DIR/workspace 2>/dev/null)" ]; then
+# ls -A はFUSEマウント直後に空を返すことがある（s3fsのlazy listing）
+# 仕様書セクション2の確立済み修正パターン: cat で実際に読み取って存在確認
+FUSE_WORKSPACE_READY=0
+if [ -d "$BACKUP_DIR/workspace" ]; then
+    for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        if [ "$(cat $BACKUP_DIR/workspace/IDENTITY.md 2>/dev/null | wc -c)" -gt 10 ] || \
+           [ "$(cat $BACKUP_DIR/workspace/MEMORY.md 2>/dev/null | wc -c)" -gt 0 ]; then
+            echo "Workspace files accessible via FUSE after $(( (_i - 1) * 2 ))s"
+            FUSE_WORKSPACE_READY=1
+            break
+        fi
+        sleep 2
+    done
+    if [ "$FUSE_WORKSPACE_READY" -eq 0 ]; then
+        echo "WARNING: workspace files not accessible via FUSE after 30s, skipping restore"
+    fi
+fi
+if [ "$FUSE_WORKSPACE_READY" -eq 1 ]; then
     # タイムスタンプに関わらず、R2にデータがあるならそちらを正とする
     echo "Restoring workspace from R2 backup to protect against deploy-overwrite..."
     mkdir -p "$WORKSPACE_DIR"

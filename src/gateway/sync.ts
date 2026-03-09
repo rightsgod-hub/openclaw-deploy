@@ -3,6 +3,9 @@ import type { MoltbotEnv } from '../types';
 import { R2_MOUNT_PATH } from '../config';
 import { mountR2Storage } from './r2';
 
+// CF Container sandboxではkill/pkillが効かないため、フラグで並行実行を防止する（r2MountConfirmedと同パターン）
+let syncInProgress = false;
+
 
 export interface SyncResult {
   success: boolean;
@@ -30,6 +33,21 @@ export interface SyncResult {
  * @returns SyncResult with success status and optional error details
  */
 export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncResult> {
+  // 並行実行防止（CF Container sandboxではpkillが効かないため、フラグで制御）
+  if (syncInProgress) {
+    console.log('[sync] Already in progress, skipping');
+    return { success: true, lastSync: 'skipped' };
+  }
+  syncInProgress = true;
+
+  try {
+    return await _syncToR2(sandbox, env);
+  } finally {
+    syncInProgress = false;
+  }
+}
+
+async function _syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncResult> {
   // Check if R2 is configured
   if (!env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY || !env.CF_ACCOUNT_ID) {
     return { success: false, error: 'R2 storage is not configured' };
@@ -93,8 +111,7 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
 
   // Sync to the new openclaw/ R2 prefix (even if source is legacy .clawdbot)
   // Also sync workspace directory (excluding skills since they're synced separately)
-  // Kill any stale rsync processes before starting (sandbox.exec timeout only kills Worker-side await, not container process)
-  const syncCmd = `pkill -f 'rsync.*r2/' || true && rsync -r --no-times --delete --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' --exclude='workspace/' ${configDir}/ ${R2_MOUNT_PATH}/openclaw/ && rsync -r --no-times --delete --exclude='skills' /root/clawd/ ${R2_MOUNT_PATH}/workspace/ && rsync -r --no-times --delete /root/clawd/skills/ ${R2_MOUNT_PATH}/skills/ && date -Iseconds > ${R2_MOUNT_PATH}/.last-sync`;
+  const syncCmd = `rsync -r --no-times --delete --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' --exclude='workspace/' ${configDir}/ ${R2_MOUNT_PATH}/openclaw/ && rsync -r --no-times --delete --exclude='skills' /root/clawd/ ${R2_MOUNT_PATH}/workspace/ && rsync -r --no-times --delete /root/clawd/skills/ ${R2_MOUNT_PATH}/skills/ && date -Iseconds > ${R2_MOUNT_PATH}/.last-sync`;
 
   try {
     const syncResult = await sandbox.exec(syncCmd, { timeout: 30000 });
