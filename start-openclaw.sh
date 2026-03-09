@@ -400,6 +400,22 @@ if (process.env.MOONSHOT_API_KEY) {
     console.log('[patch] moonshot provider added');
 }
 
+// Enable OpenAI-compatible chat completions endpoint
+if (!config.gateway) config.gateway = {};
+if (!config.gateway.http) config.gateway.http = {};
+if (!config.gateway.http.endpoints) config.gateway.http.endpoints = {};
+config.gateway.http.endpoints.chatCompletions = { enabled: true };
+console.log('[patch] chatCompletions endpoint enabled');
+
+// Add kimi-k2.5 to agent model allowlist and set as primary
+if (!config.agents) config.agents = {};
+if (!config.agents.defaults) config.agents.defaults = {};
+if (!config.agents.defaults.models) config.agents.defaults.models = {};
+config.agents.defaults.models['moonshot/kimi-k2.5'] = { alias: 'Kimi K2.5' };
+if (!config.agents.defaults.model) config.agents.defaults.model = {};
+config.agents.defaults.model.primary = 'moonshot/kimi-k2.5';
+console.log('[patch] kimi-k2.5 set as primary model');
+
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration patched successfully');
 EOFPATCH
