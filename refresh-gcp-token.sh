@@ -62,7 +62,7 @@ try {
     const rawBefore = fs.readFileSync(configPath, 'utf8');
     const baseHash = crypto.createHash('sha256').update(rawBefore).digest('hex');
 
-    // tokenをメモリ上で更新
+    // tokenをメモリ上で更新（diskには書き込まない — サーバーがconfig.apply成功時に書き込む）
     const config = JSON.parse(rawBefore);
     if (!config.models) config.models = {};
     if (!config.models.providers) config.models.providers = {};
@@ -82,8 +82,8 @@ try {
         config.models.providers['cf-ai-gw-google-0'].apiKey = token;
     }
 
-    // diskに書き込み
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    // フォールバック用に更新済みconfigをtempfileへ書き込み（実際のconfigは更新しない）
+    fs.writeFileSync('/tmp/gcp-config-updated.json', JSON.stringify(config, null, 2));
 
     // config.apply用ペイロード（discord/gateway除外）
     const applyConfig = Object.assign({}, config);
@@ -101,9 +101,10 @@ if [ -z "$APPLY_PAYLOAD" ]; then
     cat /tmp/config-update-debug.log | head -3
     exit 1
 fi
-echo "Config updated with refreshed GCP token"
 
 # --- ゲートウェイのメモリ上の設定を強制更新（config.getなし）---
+# diskには書き込まない — config.apply成功時はサーバーが書き込む
+# config.apply失敗時はフォールバックとしてdiskに書き込み、exit 2でcronにgateway再起動を指示
 APPLY_SUCCESS=0
 if [ -n "$GW_TOKEN" ]; then
     APPLY_OUT=$(openclaw gateway call config.apply \
@@ -117,12 +118,22 @@ if [ -n "$GW_TOKEN" ]; then
     else
         echo "WARNING: config.apply failed (rc=$APPLY_RC)"
         echo "$APPLY_OUT" | head -3
+        # フォールバック: 更新済みconfigをdiskに書き込み（次のgateway起動時に反映）
+        if [ -f /tmp/gcp-config-updated.json ]; then
+            cp /tmp/gcp-config-updated.json /root/.openclaw/openclaw.json
+            echo "Fallback: wrote updated config to disk"
+        fi
     fi
 else
     echo "WARNING: Could not read gateway token for config.apply"
+    # gateway未起動: diskに書き込み（起動時に反映）
+    if [ -f /tmp/gcp-config-updated.json ]; then
+        cp /tmp/gcp-config-updated.json /root/.openclaw/openclaw.json
+        echo "Fallback: wrote updated config to disk (no gateway token)"
+    fi
 fi
 
-# Always write timestamp - token IS refreshed in the file regardless of config.apply
+# Always write timestamp
 date +%s > "$LAST_REFRESH_FILE"
 
 # --- expires_in をログ出力 ---
@@ -133,10 +144,10 @@ fi
 echo "GCP token refreshed at $(date)"
 
 # Exit code signals cron handler:
-# 0 = fully applied to running gateway
-# 2 = token in file but gateway needs restart to load it
+# 0 = fully applied to running gateway (server wrote config + triggered SIGUSR1 restart)
+# 2 = token written to disk but gateway needs restart to load it
 if [ "$APPLY_SUCCESS" -eq 1 ]; then
     exit 0
 else
-    exit 0
+    exit 2
 fi

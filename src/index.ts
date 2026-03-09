@@ -450,7 +450,11 @@ async function scheduled(
     const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
     // Check port first: if port is responding, gateway is alive regardless of SDK process state
-    const portResponding = await isGatewayPortResponding(sandbox);
+    // Wrap with timeout: sandbox stub calls hang during DO resets → Worker exceededCpu without this
+    const portResponding = await Promise.race([
+      isGatewayPortResponding(sandbox),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 8000)),
+    ]);
 
     if (portResponding) {
       console.log('[cron] Port 18789 is responding, gateway is running');
