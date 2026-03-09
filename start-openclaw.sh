@@ -105,22 +105,20 @@ fi
 # CRITICAL: Always restore from R2 when data exists to prevent deploy-overwrite
 # This includes IDENTITY.md, USER.md, MEMORY.md, memory/, and assets/
 WORKSPACE_DIR="/root/clawd"
-# ls -A はFUSEマウント直後に空を返すことがある（s3fsのlazy listing）
-# 仕様書セクション2の確立済み修正パターン: cat で実際に読み取って存在確認
+# [ -d ] もFUSEマウント直後にfalseを返すことがある（s3fsのlazy listing）
+# [ -d ] チェックを除去し、直接 cat でファイルの存在を確認する（仕様書セクション2）
 FUSE_WORKSPACE_READY=0
-if [ -d "$BACKUP_DIR/workspace" ]; then
-    for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-        if [ "$(cat $BACKUP_DIR/workspace/IDENTITY.md 2>/dev/null | wc -c)" -gt 10 ] || \
-           [ "$(cat $BACKUP_DIR/workspace/MEMORY.md 2>/dev/null | wc -c)" -gt 0 ]; then
-            echo "Workspace files accessible via FUSE after $(( (_i - 1) * 2 ))s"
-            FUSE_WORKSPACE_READY=1
-            break
-        fi
-        sleep 2
-    done
-    if [ "$FUSE_WORKSPACE_READY" -eq 0 ]; then
-        echo "WARNING: workspace files not accessible via FUSE after 30s, skipping restore"
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    if [ "$(cat "$BACKUP_DIR/workspace/IDENTITY.md" 2>/dev/null | wc -c)" -gt 10 ] || \
+       [ "$(cat "$BACKUP_DIR/workspace/MEMORY.md" 2>/dev/null | wc -c)" -gt 0 ]; then
+        echo "Workspace files accessible via FUSE after $(( (_i - 1) * 2 ))s"
+        FUSE_WORKSPACE_READY=1
+        break
     fi
+    sleep 2
+done
+if [ "$FUSE_WORKSPACE_READY" -eq 0 ]; then
+    echo "WARNING: workspace files not accessible via FUSE after 30s, skipping restore"
 fi
 if [ "$FUSE_WORKSPACE_READY" -eq 1 ]; then
     # タイムスタンプに関わらず、R2にデータがあるならそちらを正とする
@@ -172,13 +170,11 @@ GWSCREDS
     echo "Google Workspace credentials configured"
 fi
 
-# Restore skills from R2 backup if available (only if R2 is newer)
+# Restore skills from R2 backup if available
+# [ -d ] と ls -A を除去（FUSE lazy listingで信頼できない）— rsyncで直接試行
 SKILLS_DIR="/root/clawd/skills"
-if [ -d "$BACKUP_DIR/skills" ] && [ "$(ls -A $BACKUP_DIR/skills 2>/dev/null)" ]; then
-    if should_restore_from_r2; then
-        echo "Restoring skills from $BACKUP_DIR/skills..."
-        mkdir -p "$SKILLS_DIR"
-        cp -a "$BACKUP_DIR/skills/." "$SKILLS_DIR/"
+if should_restore_from_r2; then
+    if rsync -a "$BACKUP_DIR/skills/" "$SKILLS_DIR/" 2>/dev/null; then
         echo "Restored skills from R2 backup"
     fi
 fi
