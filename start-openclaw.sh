@@ -343,6 +343,7 @@ if (process.env.DISCORD_BOT_TOKEN) {
         eventQueue: {
             listenerTimeout: 300000,
         },
+        accounts: {},  // Prevent stale R2 accounts from causing tokenSource:"none"
     };
     if (process.env.DISCORD_DM_ALLOW_FROM) {
         discordConfig.allowFrom = process.env.DISCORD_DM_ALLOW_FROM.split(',');
