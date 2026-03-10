@@ -416,6 +416,10 @@ if (!config.agents.defaults.model) config.agents.defaults.model = {};
 config.agents.defaults.model.primary = 'moonshot/kimi-k2.5';
 console.log('[patch] kimi-k2.5 set as primary model');
 
+// Increase agent timeout for slower models like kimi-k2.5
+config.agents.defaults.timeoutSeconds = 120;
+console.log('[patch] agent timeoutSeconds set to 120s');
+
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration patched successfully');
 EOFPATCH
