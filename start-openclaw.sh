@@ -298,8 +298,8 @@ if (!config.models.providers) config.models.providers = {};
 if (!config.agents) config.agents = {};
 if (!config.agents.defaults) config.agents.defaults = {};
 if (!config.agents.defaults.model) config.agents.defaults.model = {};
-config.agents.defaults.model.primary = 'cf-ai-gw-google-0/gemini-3-flash-preview';
-console.log('Primary model set to: cf-ai-gw-google-0/gemini-3-flash-preview');
+config.agents.defaults.model.primary = 'moonshot/kimi-k2.5';
+console.log('Primary model set to: moonshot/kimi-k2.5');
 
 // Workspace path: align with R2 restore location (/root/clawd)
 // Default is /root/.openclaw/workspace — override so bot reads/writes
@@ -395,6 +395,13 @@ if (process.env.MOONSHOT_API_KEY) {
             input: ['text', 'image'],
             contextWindow: 256000,
             maxTokens: 8192
+        }, {
+            id: 'kimi-k2-turbo-preview',
+            name: 'Kimi K2 Turbo',
+            reasoning: false,
+            input: ['text', 'image'],
+            contextWindow: 131072,
+            maxTokens: 8192
         }]
     };
     console.log('[patch] moonshot provider added');
@@ -412,13 +419,13 @@ if (!config.agents) config.agents = {};
 if (!config.agents.defaults) config.agents.defaults = {};
 if (!config.agents.defaults.models) config.agents.defaults.models = {};
 config.agents.defaults.models['moonshot/kimi-k2.5'] = { alias: 'Kimi K2.5' };
+config.agents.defaults.models['cf-ai-gw-google-0/gemini-3-flash-preview'] = { alias: 'Gemini Flash' };
+config.agents.defaults.models['moonshot/kimi-k2-turbo-preview'] = { alias: 'Kimi K2 Turbo' };
 if (!config.agents.defaults.model) config.agents.defaults.model = {};
 config.agents.defaults.model.primary = 'moonshot/kimi-k2.5';
-console.log('[patch] kimi-k2.5 set as primary model');
-
-// Increase agent timeout for slower models like kimi-k2.5
-config.agents.defaults.timeoutSeconds = 120;
-console.log('[patch] agent timeoutSeconds set to 120s');
+console.log('[patch] primary model: moonshot/kimi-k2.5');
+config.agents.defaults.timeoutSeconds = 300;
+console.log('[patch] agent timeoutSeconds set to 300s');
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration patched successfully');
