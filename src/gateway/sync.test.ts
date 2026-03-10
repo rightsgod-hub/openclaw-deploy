@@ -26,25 +26,26 @@ describe('syncToR2', () => {
       expect(result.error).toBe('R2 storage is not configured');
     });
 
-    it('returns error when mount fails', async () => {
-      const { sandbox, execMock, mountBucketMock } = createMockSandbox();
-      execMock.mockResolvedValue({ exitCode: 1, stdout: '', stderr: '', command: '', durationMs: 0 });
-      mountBucketMock.mockRejectedValue(new Error('Mount failed'));
+    it('returns error when rclone config fails', async () => {
+      const { sandbox, execMock } = createMockSandbox();
+      execMock.mockRejectedValue(new Error('exec failed'));
 
       const env = createMockEnvWithR2();
 
       const result = await syncToR2(sandbox, env);
 
       expect(result.success).toBe(false);
-      expect(result.error).toBe('Failed to mount R2 storage');
+      expect(result.error).toBe('Failed to configure rclone for R2');
     });
   });
 
   describe('sanity checks', () => {
     it('returns error when source has no config file', async () => {
       const { sandbox, execMock } = createMockSandbox();
-      // Calls: check openclaw.json, check clawdbot.json
+      // Calls: rclone mkdir (OK), rclone config write (OK), check openclaw.json (FAIL), check clawdbot.json (FAIL)
       execMock
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 }) // mkdir
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 }) // rclone config write
         .mockResolvedValueOnce({ exitCode: 1, stdout: '', stderr: '', command: '', durationMs: 0 }) // No openclaw.json
         .mockResolvedValueOnce({ exitCode: 1, stdout: '', stderr: '', command: '', durationMs: 0 }); // No clawdbot.json either
 
@@ -58,10 +59,12 @@ describe('syncToR2', () => {
 
     it('returns error when workspace IDENTITY.md is missing or template', async () => {
       const { sandbox, execMock } = createMockSandbox();
-      // Calls: check openclaw.json (OK), check IDENTITY.md (FAIL - missing or template)
+      // Calls: mkdir (OK), rclone config (OK), check openclaw.json (OK), check IDENTITY.md (FAIL)
       execMock
-        .mockResolvedValueOnce({ exitCode: 0, stdout: 'ok', stderr: '', command: '', durationMs: 0 })
-        .mockResolvedValueOnce({ exitCode: 1, stdout: '', stderr: '', command: '', durationMs: 0 });
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 }) // mkdir
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 }) // rclone config write
+        .mockResolvedValueOnce({ exitCode: 0, stdout: 'ok', stderr: '', command: '', durationMs: 0 }) // openclaw.json exists
+        .mockResolvedValueOnce({ exitCode: 1, stdout: '', stderr: '', command: '', durationMs: 0 }); // IDENTITY.md missing
 
       const env = createMockEnvWithR2();
 
@@ -77,12 +80,14 @@ describe('syncToR2', () => {
       const { sandbox, execMock } = createMockSandbox();
       const timestamp = '2026-01-27T12:00:00+00:00';
 
-      // Calls: check openclaw.json, check IDENTITY.md, rsync, cat timestamp
+      // Calls: mkdir, rclone config, check openclaw.json, check IDENTITY.md, rclone copy, read timestamp
       execMock
-        .mockResolvedValueOnce({ exitCode: 0, stdout: 'ok', stderr: '', command: '', durationMs: 0 })
-        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 })
-        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 })
-        .mockResolvedValueOnce({ exitCode: 0, stdout: timestamp, stderr: '', command: '', durationMs: 0 });
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 }) // mkdir
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 }) // rclone config
+        .mockResolvedValueOnce({ exitCode: 0, stdout: 'ok', stderr: '', command: '', durationMs: 0 }) // openclaw.json
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 }) // IDENTITY.md
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 }) // rclone copy
+        .mockResolvedValueOnce({ exitCode: 0, stdout: timestamp, stderr: '', command: '', durationMs: 0 }); // timestamp
 
       const env = createMockEnvWithR2();
 
@@ -92,15 +97,16 @@ describe('syncToR2', () => {
       expect(result.lastSync).toBe(timestamp);
     });
 
-    it('returns error when rsync fails (no timestamp created)', async () => {
+    it('returns error when rclone copy exits non-zero', async () => {
       const { sandbox, execMock } = createMockSandbox();
 
-      // Calls: check openclaw.json, check IDENTITY.md, rsync (fails), cat timestamp (empty)
+      // Calls: mkdir, rclone config, check openclaw.json, check IDENTITY.md, rclone copy (fails)
       execMock
-        .mockResolvedValueOnce({ exitCode: 0, stdout: 'ok', stderr: '', command: '', durationMs: 0 })
-        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 })
-        .mockResolvedValueOnce({ exitCode: 1, stdout: '', stderr: '', command: '', durationMs: 0 })
-        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 });
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 }) // mkdir
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 }) // rclone config
+        .mockResolvedValueOnce({ exitCode: 0, stdout: 'ok', stderr: '', command: '', durationMs: 0 }) // openclaw.json
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 }) // IDENTITY.md
+        .mockResolvedValueOnce({ exitCode: 1, stdout: '', stderr: 'rclone error', command: '', durationMs: 0 }); // rclone copy fails
 
       const env = createMockEnvWithR2();
 
@@ -110,28 +116,29 @@ describe('syncToR2', () => {
       expect(result.error).toBe('Sync failed');
     });
 
-    it('verifies rsync command is called with correct flags', async () => {
+    it('verifies rclone copy command is called with correct flags', async () => {
       const { sandbox, execMock } = createMockSandbox();
       const timestamp = '2026-01-27T12:00:00+00:00';
 
-      // Calls: check openclaw.json, check IDENTITY.md, rsync, cat timestamp
+      // Calls: mkdir, rclone config, check openclaw.json, check IDENTITY.md, rclone copy, timestamp
       execMock
-        .mockResolvedValueOnce({ exitCode: 0, stdout: 'ok', stderr: '', command: '', durationMs: 0 })
-        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 })
-        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 })
-        .mockResolvedValueOnce({ exitCode: 0, stdout: timestamp, stderr: '', command: '', durationMs: 0 });
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 }) // mkdir
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 }) // rclone config
+        .mockResolvedValueOnce({ exitCode: 0, stdout: 'ok', stderr: '', command: '', durationMs: 0 }) // openclaw.json
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 }) // IDENTITY.md
+        .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 }) // rclone copy
+        .mockResolvedValueOnce({ exitCode: 0, stdout: timestamp, stderr: '', command: '', durationMs: 0 }); // timestamp
 
       const env = createMockEnvWithR2();
 
       await syncToR2(sandbox, env);
 
-      // Third call should be rsync to openclaw/ R2 prefix
-      const rsyncCall = execMock.mock.calls[2][0];
-      expect(rsyncCall).toContain('rsync');
-      expect(rsyncCall).toContain('--no-times');
-      expect(rsyncCall).toContain('--delete');
-      expect(rsyncCall).toContain('/root/.openclaw/');
-      expect(rsyncCall).toContain('/data/moltbot/openclaw/');
+      // Fifth call (index 4) should be rclone copy
+      const syncCall = execMock.mock.calls[4][0];
+      expect(syncCall).toContain('rclone copy');
+      expect(syncCall).toContain('--no-update-modtime');
+      expect(syncCall).toContain('/root/.openclaw/');
+      expect(syncCall).toContain('r2:moltbot-data/openclaw/');
     });
   });
 });

@@ -7,7 +7,7 @@ import {
   mountR2Storage,
   syncToR2,
 } from '../gateway';
-import { R2_MOUNT_PATH } from '../config';
+import { getR2BucketName } from '../config';
 
 // CLI commands can take 10-15 seconds to complete due to WebSocket connection overhead
 const CLI_TIMEOUT_MS = 20000;
@@ -209,9 +209,10 @@ adminApi.get('/storage', async (c) => {
       // Mount R2 if not already mounted
       await mountR2Storage(sandbox, c.env);
 
-      // Check for sync marker file
+      // Check for sync marker file via rclone
+      const bucket = getR2BucketName(c.env);
       const result = await sandbox.exec(
-        `cat ${R2_MOUNT_PATH}/.last-sync 2>/dev/null || echo ""`,
+        `rclone cat r2:${bucket}/.last-sync 2>/dev/null || echo ""`,
         { timeout: 5000 },
       );
       const timestamp = result.stdout?.trim();
@@ -282,14 +283,14 @@ adminApi.post('/gateway/restart', async (c) => {
   }
 });
 
-// Stage 2: Destroy the entire container (with optional skipSync for FUSE hang scenarios)
+// Stage 2: Destroy the entire container (with optional skipSync for sync failure scenarios)
 adminApi.post('/gateway/destroy', async (c) => {
   const sandbox = c.get('sandbox');
   const skipSync = c.req.query('skipSync') === 'true';
 
   try {
     if (skipSync) {
-      // User explicitly chose to skip sync (e.g., FUSE is hung)
+      // User explicitly chose to skip sync (e.g., sync is failing)
       console.log('Container destroy: skipSync=true, skipping R2 sync...');
     } else {
       // Attempt R2 sync before destruction
@@ -304,7 +305,7 @@ adminApi.post('/gateway/destroy', async (c) => {
             success: false,
             error: 'R2 sync failed. Container NOT destroyed to prevent data loss.',
             syncError: syncResult.error,
-            hint: 'If FUSE is hung and sync will never succeed, retry with skipSync=true to force destroy.',
+            hint: 'If sync is failing and will never succeed, retry with skipSync=true to force destroy.',
             retryUrl,
           }, 500);
         }
@@ -316,7 +317,7 @@ adminApi.post('/gateway/destroy', async (c) => {
         return c.json({
           success: false,
           error: `R2 sync error: ${String(syncError)}`,
-          hint: 'If FUSE is hung and sync will never succeed, retry with skipSync=true to force destroy.',
+          hint: 'If sync is failing and will never succeed, retry with skipSync=true to force destroy.',
           retryUrl,
         }, 500);
       }

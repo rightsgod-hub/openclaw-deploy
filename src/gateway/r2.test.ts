@@ -64,9 +64,10 @@ describe('mountR2Storage', () => {
     });
   });
 
-  describe('mounting behavior', () => {
-    it('mounts R2 bucket when credentials provided and not already mounted', async () => {
-      const { sandbox, mountBucketMock } = createMockSandbox({ mounted: false });
+  describe('rclone configuration', () => {
+    it('configures rclone when credentials provided', async () => {
+      const { sandbox, execMock } = createMockSandbox();
+      execMock.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 });
       const env = createMockEnvWithR2({
         R2_ACCESS_KEY_ID: 'key123',
         R2_SECRET_ACCESS_KEY: 'secret',
@@ -76,17 +77,18 @@ describe('mountR2Storage', () => {
       const result = await mountR2Storage(sandbox, env);
 
       expect(result).toBe(true);
-      expect(mountBucketMock).toHaveBeenCalledWith('moltbot-data', '/data/moltbot', {
-        endpoint: 'https://account123.r2.cloudflarestorage.com',
-        credentials: {
-          accessKeyId: 'key123',
-          secretAccessKey: 'secret',
-        },
-      });
+      expect(execMock).toHaveBeenCalledTimes(2);
+      // Verify mkdir and heredoc write calls
+      const mkdirCall = execMock.mock.calls[0][0];
+      expect(mkdirCall).toContain('mkdir -p /root/.config/rclone');
+      const writeCall = execMock.mock.calls[1][0];
+      expect(writeCall).toContain('rclone.conf');
+      expect(writeCall).toContain('key123');
     });
 
     it('uses custom bucket name from R2_BUCKET_NAME env var', async () => {
-      const { sandbox, mountBucketMock } = createMockSandbox({ mounted: false });
+      const { sandbox, execMock } = createMockSandbox();
+      execMock.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 });
       const env = createMockEnvWithR2({
         R2_ACCESS_KEY_ID: 'key123',
         R2_SECRET_ACCESS_KEY: 'secret',
@@ -97,129 +99,76 @@ describe('mountR2Storage', () => {
       const result = await mountR2Storage(sandbox, env);
 
       expect(result).toBe(true);
-      expect(mountBucketMock).toHaveBeenCalledWith(
+      expect(console.log).toHaveBeenCalledWith(
+        'rclone configured for R2 bucket:',
         'moltbot-e2e-test123',
-        '/data/moltbot',
-        expect.any(Object),
+        'at',
+        'https://account123.r2.cloudflarestorage.com',
       );
     });
 
-    it('returns true immediately when bucket is already mounted', async () => {
-      const { sandbox, mountBucketMock } = createMockSandbox({ mounted: true });
-      const env = createMockEnvWithR2();
-
-      const result = await mountR2Storage(sandbox, env);
-
-      expect(result).toBe(true);
-      expect(mountBucketMock).toHaveBeenCalled();
-      expect(console.log).toHaveBeenCalledWith('R2 bucket mounted successfully - moltbot data will persist across sessions');
-    });
-
-    it('logs success message when mounted successfully', async () => {
-      const { sandbox } = createMockSandbox({ mounted: false });
+    it('logs success message when configured successfully', async () => {
+      const { sandbox, execMock } = createMockSandbox();
+      execMock.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 });
       const env = createMockEnvWithR2();
 
       await mountR2Storage(sandbox, env);
 
       expect(console.log).toHaveBeenCalledWith(
-        'R2 bucket mounted successfully - moltbot data will persist across sessions',
+        'rclone configured for R2 bucket:',
+        'moltbot-data',
+        'at',
+        'https://test-account-id.r2.cloudflarestorage.com',
       );
     });
   });
 
   describe('error handling', () => {
-    it('returns false when mountBucket throws and mount check fails', async () => {
-      const { sandbox, mountBucketMock } = createMockSandbox({ mounted: false });
-      mountBucketMock.mockRejectedValue(new Error('Mount failed'));
+    it('returns false when exec throws', async () => {
+      const { sandbox, execMock } = createMockSandbox();
+      execMock.mockRejectedValue(new Error('exec failed'));
 
       const env = createMockEnvWithR2();
 
       const result = await mountR2Storage(sandbox, env);
 
       expect(result).toBe(false);
-      expect(console.error).toHaveBeenCalledWith('Failed to mount R2 bucket:', 'Mount failed');
-    });
-
-    it('returns true if mount fails but check shows it is already mounted', async () => {
-      const { sandbox, mountBucketMock } = createMockSandbox();
-
-      mountBucketMock.mockRejectedValue(new Error('already mounted'));
-
-      const env = createMockEnvWithR2();
-
-      const result = await mountR2Storage(sandbox, env);
-
-      expect(result).toBe(true);
-      expect(console.log).toHaveBeenCalledWith('R2 bucket already mounted (detected from error):', 'already mounted');
-    });
-
-    it('returns true when s3fs reports MOUNTPOINT directory is not empty', async () => {
-      const { sandbox, mountBucketMock } = createMockSandbox();
-
-      mountBucketMock.mockRejectedValue(
-        new Error(
-          'S3FSMountError: S3FS mount failed: s3fs: MOUNTPOINT directory /data/moltbot is not empty. if you are sure this is safe, can use the \'nonempty\' mount option.',
-        ),
-      );
-
-      const env = createMockEnvWithR2();
-
-      const result = await mountR2Storage(sandbox, env);
-
-      expect(result).toBe(true);
-      expect(console.log).toHaveBeenCalledWith(
-        'R2 bucket already mounted (detected from error):',
-        expect.stringContaining('not empty'),
-      );
+      expect(console.error).toHaveBeenCalledWith('Failed to configure rclone:', 'exec failed');
     });
   });
 
-  describe('mount cache', () => {
-    it('skips process spawning on second call after successful mount', async () => {
-      const { sandbox, execMock } = createMockSandbox({ mounted: true });
+  describe('config cache', () => {
+    it('skips exec on second call after successful config', async () => {
+      const { sandbox, execMock } = createMockSandbox();
+      execMock.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 });
       const env = createMockEnvWithR2();
 
-      // First call - mounts via mountBucket (no exec)
+      // First call - configures rclone (mkdir + write = 2 calls)
       const result1 = await mountR2Storage(sandbox, env);
       expect(result1).toBe(true);
-      expect(execMock).not.toHaveBeenCalled();
+      expect(execMock).toHaveBeenCalledTimes(2);
 
       // Second call - should return immediately without calling exec
       const result2 = await mountR2Storage(sandbox, env);
       expect(result2).toBe(true);
-      expect(execMock).not.toHaveBeenCalled(); // no exec calls at all
-    });
-
-    it('skips process spawning after successful mountBucket', async () => {
-      const { sandbox, execMock, mountBucketMock } = createMockSandbox({ mounted: false });
-      const env = createMockEnvWithR2();
-
-      // First call - mounts via mountBucket
-      const result1 = await mountR2Storage(sandbox, env);
-      expect(result1).toBe(true);
-      expect(mountBucketMock).toHaveBeenCalledTimes(1);
-
-      // Second call - should return immediately
-      const result2 = await mountR2Storage(sandbox, env);
-      expect(result2).toBe(true);
-      expect(execMock).not.toHaveBeenCalled(); // no exec calls
-      expect(mountBucketMock).toHaveBeenCalledTimes(1); // not called again
+      expect(execMock).toHaveBeenCalledTimes(2); // not called again
     });
 
     it('resets cache with resetR2MountCache', async () => {
-      const { sandbox, execMock } = createMockSandbox({ mounted: true });
+      const { sandbox, execMock } = createMockSandbox();
+      execMock.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 });
       const env = createMockEnvWithR2();
 
-      // First call
+      // First call (mkdir + write = 2 calls)
       await mountR2Storage(sandbox, env);
-      expect(execMock).not.toHaveBeenCalled();
+      expect(execMock).toHaveBeenCalledTimes(2);
 
       // Reset cache
       resetR2MountCache();
 
-      // Second call - should mount again
+      // Second call - should configure again (2 more calls)
       await mountR2Storage(sandbox, env);
-      expect(execMock).not.toHaveBeenCalled();
+      expect(execMock).toHaveBeenCalledTimes(4);
     });
   });
 });

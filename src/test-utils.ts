@@ -66,24 +66,17 @@ export function createMockSandbox(
   const listProcessesMock = vi.fn().mockResolvedValue(options.processes || []);
   const containerFetchMock = vi.fn();
 
-  // Default: return empty stdout (not mounted), unless mounted: true
+  // Default: return empty stdout
   const startProcessMock = vi
     .fn()
-    .mockResolvedValue(
-      options.mounted
-        ? createMockProcess(
-            's3fs on /data/moltbot type fuse.s3fs (rw,nosuid,nodev,relatime,user_id=0,group_id=0)\n',
-          )
-        : createMockProcess(''),
-    );
+    .mockResolvedValue(createMockProcess(''));
 
   // exec() returns ExecResult directly (no process record)
+  // Default: successful execution (rclone config write, etc.)
   const execMock = vi
     .fn()
     .mockResolvedValue(
-      options.mounted
-        ? { exitCode: 0, stdout: 's3fs on /data/moltbot type fuse.s3fs (rw,nosuid,nodev,relatime,user_id=0,group_id=0)\n', stderr: '', command: '', durationMs: 0 }
-        : { exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 },
+      { exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 },
     );
 
   const sandbox = {

@@ -204,7 +204,7 @@ export default function AdminPage() {
       } else if (result.retryUrl) {
         if (
           confirm(
-            `R2 sync failed: ${result.error}\n\nFUSEハング等でsyncできない場合、syncをスキップしてコンテナを破壊できます。skipSyncで実行しますか？`,
+            `R2 sync failed: ${result.error}\n\nsync失敗等でsyncできない場合、syncをスキップしてコンテナを破壊できます。skipSyncで実行しますか？`,
           )
         ) {
           await handleDestroyContainer(true);

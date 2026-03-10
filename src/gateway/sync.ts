@@ -1,9 +1,9 @@
 import type { Sandbox } from '@cloudflare/sandbox';
 import type { MoltbotEnv } from '../types';
-import { R2_MOUNT_PATH } from '../config';
+import { getR2BucketName } from '../config';
 import { mountR2Storage } from './r2';
 
-// CF Container sandboxではkill/pkillが効かないため、フラグで並行実行を防止する（r2MountConfirmedと同パターン）
+// CF Container sandboxではkill/pkillが効かないため、フラグで並行実行を防止する
 let syncInProgress = false;
 
 
@@ -17,23 +17,14 @@ export interface SyncResult {
 /**
  * Sync OpenClaw config and workspace from container to R2 for persistence.
  *
- * This function:
- * 1. Mounts R2 if not already mounted
- * 2. Verifies source has critical files (prevents overwriting good backup with empty data)
- * 3. Runs rsync to copy config, workspace, and skills to R2
- * 4. Writes a timestamp file for tracking
+ * Uses rclone copy to directly push data to R2 (no FUSE mount, no dest-side deletion).
  *
  * Syncs three directories:
- * - Config: /root/.openclaw/ (or /root/.clawdbot/) → R2:/openclaw/
- * - Workspace: /root/clawd/ → R2:/workspace/ (IDENTITY.md, MEMORY.md, memory/, assets/)
+ * - Config: /root/.openclaw/ → R2:/openclaw/
+ * - Workspace: /root/clawd/ → R2:/workspace/
  * - Skills: /root/clawd/skills/ → R2:/skills/
- *
- * @param sandbox - The sandbox instance
- * @param env - Worker environment bindings
- * @returns SyncResult with success status and optional error details
  */
 export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncResult> {
-  // 並行実行防止（CF Container sandboxではpkillが効かないため、フラグで制御）
   if (syncInProgress) {
     console.log('[sync] Already in progress, skipping');
     return { success: true, lastSync: 'skipped' };
@@ -48,37 +39,34 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
 }
 
 async function _syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncResult> {
-  // Check if R2 is configured
   if (!env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY || !env.CF_ACCOUNT_ID) {
     return { success: false, error: 'R2 storage is not configured' };
   }
 
-  // Mount R2 if not already mounted
-  const mounted = await mountR2Storage(sandbox, env);
-  if (!mounted) {
-    return { success: false, error: 'Failed to mount R2 storage' };
+  const configured = await mountR2Storage(sandbox, env);
+  if (!configured) {
+    return { success: false, error: 'Failed to configure rclone for R2' };
   }
 
-  // Determine which config directory exists
-  // Check new path first, fall back to legacy
+  const bucketName = getR2BucketName(env);
+  const r2 = `r2:${bucketName}`;
+
+  // Determine config directory
   let configDir = '/root/.openclaw';
-  let configFilename = 'openclaw.json';
   try {
     const checkNew = await sandbox.exec('test -f /root/.openclaw/openclaw.json', { timeout: 5000 });
     if (checkNew.exitCode !== 0) {
       const checkLegacy = await sandbox.exec('test -f /root/.clawdbot/clawdbot.json', { timeout: 5000 });
       if (checkLegacy.exitCode === 0) {
         configDir = '/root/.clawdbot';
-        configFilename = 'clawdbot.json';
       } else {
         return {
           success: false,
           error: 'Sync aborted: no config file found',
-          details: 'Neither openclaw.json nor clawdbot.json found in config directory.',
+          details: 'Neither openclaw.json nor clawdbot.json found.',
         };
       }
     }
-
   } catch (err) {
     return {
       success: false,
@@ -87,8 +75,7 @@ async function _syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncResult>
     };
   }
 
-  // Verify workspace has real content before syncing with --delete
-  // Prevents destroying R2 backup when container has empty/template workspace
+  // Verify workspace has real content before syncing
   try {
     const identityCheck = await sandbox.exec(
       'test -f /root/clawd/IDENTITY.md && ! grep -q "Fill this in" /root/clawd/IDENTITY.md',
@@ -98,7 +85,7 @@ async function _syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncResult>
       return {
         success: false,
         error: 'Sync aborted: workspace not initialized',
-        details: 'IDENTITY.md is missing or contains template content. Skipping sync to protect R2 backup.',
+        details: 'IDENTITY.md is missing or contains template content.',
       };
     }
   } catch (err) {
@@ -109,16 +96,26 @@ async function _syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncResult>
     };
   }
 
-  // Sync to the new openclaw/ R2 prefix (even if source is legacy .clawdbot)
-  // Also sync workspace directory (excluding skills since they're synced separately)
-  const syncCmd = `rsync -r --no-times --delete --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' --exclude='workspace/' ${configDir}/ ${R2_MOUNT_PATH}/openclaw/ && rsync -r --no-times --delete --exclude='skills' /root/clawd/ ${R2_MOUNT_PATH}/workspace/ && rsync -r --no-times --delete /root/clawd/skills/ ${R2_MOUNT_PATH}/skills/ && date -Iseconds > ${R2_MOUNT_PATH}/.last-sync`;
+  // rclone copy: source → R2 (copies source files without deleting dest-only files)
+  const syncCmd = `rclone copy ${configDir}/ ${r2}/openclaw/ --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' --exclude='workspace/**' --no-update-modtime && rclone copy /root/clawd/ ${r2}/workspace/ --exclude='skills/**' --exclude='.venv/**' --exclude='.git/**' --no-update-modtime && rclone copy /root/clawd/skills/ ${r2}/skills/ --no-update-modtime && date -Iseconds > /tmp/.r2-last-sync && rclone copyto /tmp/.r2-last-sync ${r2}/.last-sync`;
 
   try {
-    const syncResult = await sandbox.exec(syncCmd, { timeout: 30000 });
+    const syncResult = await sandbox.exec(syncCmd, { timeout: 60000 });
 
-    // Check for success by reading the timestamp file
-    const timestampResult = await sandbox.exec(`cat ${R2_MOUNT_PATH}/.last-sync`, { timeout: 5000 });
-    const lastSync = timestampResult.stdout?.trim();
+    if (syncResult.exitCode !== 0) {
+      return {
+        success: false,
+        error: 'Sync failed',
+        details: syncResult.stderr || syncResult.stdout || 'rclone exited non-zero',
+      };
+    }
+
+    // Read timestamp back to confirm
+    const tsResult = await sandbox.exec(
+      `rclone cat ${r2}/.last-sync 2>/dev/null || cat /tmp/.r2-last-sync 2>/dev/null || echo ""`,
+      { timeout: 10000 },
+    );
+    const lastSync = tsResult.stdout?.trim();
 
     if (lastSync && lastSync.match(/^\d{4}-\d{2}-\d{2}/)) {
       return { success: true, lastSync };
@@ -126,7 +123,7 @@ async function _syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncResult>
       return {
         success: false,
         error: 'Sync failed',
-        details: syncResult.stderr || syncResult.stdout || 'No timestamp file created',
+        details: 'No valid timestamp after sync',
       };
     }
   } catch (err) {

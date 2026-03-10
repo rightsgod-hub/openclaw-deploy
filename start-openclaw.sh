@@ -1,15 +1,16 @@
 #!/bin/bash
 # Startup script for OpenClaw in Cloudflare Sandbox
 # This script:
-# 1. Restores config from R2 backup if available
-# 2. Runs openclaw onboard --non-interactive to configure from env vars
-# 3. Patches config for features onboard doesn't cover (channels, gateway auth)
-# 4. Starts the gateway
+# 1. Writes rclone config for R2 access (no FUSE mount needed)
+# 2. Restores config/workspace from R2 backup using rclone copy
+# 3. Runs openclaw onboard --non-interactive to configure from env vars
+# 4. Patches config for features onboard doesn't cover (channels, gateway auth)
+# 5. Starts the gateway
 
 # set -e removed: single command failure must not kill the entire script
 # Each section handles its own errors with || true or fallback logic
 
-# 二重起動防止（FUSE遅延中の複数インスタンス競合を防止）
+# 二重起動防止（複数インスタンス競合を防止）
 exec 9>/tmp/openclaw-start.lock
 flock -n 9 || { echo "Another start-openclaw.sh is already running, exiting."; exit 0; }
 
@@ -20,28 +21,38 @@ fi
 
 CONFIG_DIR="/root/.openclaw"
 CONFIG_FILE="$CONFIG_DIR/openclaw.json"
-BACKUP_DIR="/data/moltbot"
+R2_BUCKET="${R2_BUCKET_NAME:-moltbot-data}"
 
 echo "Config directory: $CONFIG_DIR"
-echo "Backup directory: $BACKUP_DIR"
-
-# Wait for R2 mount (max 30 seconds)
-echo "Waiting for R2 mount at $BACKUP_DIR..."
-R2_WAIT=0
-while ! mountpoint -q "$BACKUP_DIR" 2>/dev/null && [ $R2_WAIT -lt 30 ]; do
-    sleep 1
-    R2_WAIT=$((R2_WAIT + 1))
-done
-if mountpoint -q "$BACKUP_DIR" 2>/dev/null; then
-    echo "R2 mounted after ${R2_WAIT}s"
-else
-    echo "WARNING: R2 not available after 30s, continuing without backup"
-fi
+echo "R2 bucket: $R2_BUCKET"
 
 mkdir -p "$CONFIG_DIR"
 
 # ============================================================
-# RESTORE FROM R2 BACKUP
+# CONFIGURE RCLONE FOR R2 DIRECT ACCESS (no FUSE mount)
+# ============================================================
+RCLONE_AVAILABLE=0
+
+if [ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ] && [ -n "$CF_ACCOUNT_ID" ]; then
+    mkdir -p /root/.config/rclone
+    cat > /root/.config/rclone/rclone.conf << RCLONECONF
+[r2]
+type = s3
+provider = Cloudflare
+access_key_id = $R2_ACCESS_KEY_ID
+secret_access_key = $R2_SECRET_ACCESS_KEY
+endpoint = https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com
+region = auto
+no_check_bucket = true
+RCLONECONF
+    echo "rclone configured for R2 bucket: $R2_BUCKET"
+    RCLONE_AVAILABLE=1
+else
+    echo "WARNING: R2 credentials not set, skipping R2 operations"
+fi
+
+# ============================================================
+# RESTORE FROM R2 BACKUP (via rclone - no FUSE, no lazy listing)
 # ============================================================
 
 should_restore_from_r2() {
@@ -54,100 +65,96 @@ should_restore_from_r2() {
     fi
 
     # 2. R2にバックアップがあるなら、基本的にそちらを優先
-    # （デプロイ直後はLOCAL_TIMEが新しくなってしまうため、タイムスタンプ比較は信頼できない）
-    local R2_SYNC_FILE="$BACKUP_DIR/.last-sync"
-    if [ -f "$R2_SYNC_FILE" ]; then
-        echo "Found R2 backup, prioritizing R2 data to prevent deploy-overwrite"
+    if rclone lsf "r2:${R2_BUCKET}/.last-sync" 2>/dev/null | grep -q ".last-sync"; then
+        echo "Found R2 backup (.last-sync exists), prioritizing R2 data"
         return 0
     fi
 
     return 1
 }
 
-# Check for backup data in new openclaw/ prefix first, then legacy clawdbot/ prefix
-if [ -f "$BACKUP_DIR/openclaw/openclaw.json" ]; then
-    if should_restore_from_r2; then
-        echo "Restoring from R2 backup at $BACKUP_DIR/openclaw..."
-        rsync -a --exclude='workspace/' "$BACKUP_DIR/openclaw/" "$CONFIG_DIR/"
-        cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
-        echo "Restored config from R2 backup"
-    fi
-elif [ -f "$BACKUP_DIR/clawdbot/clawdbot.json" ]; then
-    # Legacy backup format — migrate .clawdbot data into .openclaw
-    if should_restore_from_r2; then
-        echo "Restoring from legacy R2 backup at $BACKUP_DIR/clawdbot..."
-        rsync -a --exclude='workspace/' "$BACKUP_DIR/clawdbot/" "$CONFIG_DIR/"
-        cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
-        # Rename the config file if it has the old name
-        if [ -f "$CONFIG_DIR/clawdbot.json" ] && [ ! -f "$CONFIG_FILE" ]; then
-            mv "$CONFIG_DIR/clawdbot.json" "$CONFIG_FILE"
+if [ "$RCLONE_AVAILABLE" -eq 1 ]; then
+    # Check for config backup in R2
+    if rclone lsf "r2:${R2_BUCKET}/openclaw/openclaw.json" 2>/dev/null | grep -q "openclaw.json"; then
+        if should_restore_from_r2; then
+            echo "Restoring config from R2 backup (openclaw/)..."
+            rclone copy "r2:${R2_BUCKET}/openclaw/" "$CONFIG_DIR/" \
+                --exclude='workspace/**' \
+                || echo "WARNING: Config restore from R2 failed"
+            rclone copyto "r2:${R2_BUCKET}/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
+            echo "Restored config from R2 backup"
         fi
-        echo "Restored and migrated config from legacy R2 backup"
-    fi
-elif [ -f "$BACKUP_DIR/clawdbot.json" ]; then
-    # Very old legacy backup format (flat structure)
-    if should_restore_from_r2; then
-        echo "Restoring from flat legacy R2 backup at $BACKUP_DIR..."
-        rsync -a --exclude='workspace/' "$BACKUP_DIR/" "$CONFIG_DIR/"
-        cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
-        if [ -f "$CONFIG_DIR/clawdbot.json" ] && [ ! -f "$CONFIG_FILE" ]; then
-            mv "$CONFIG_DIR/clawdbot.json" "$CONFIG_FILE"
-        fi
-        echo "Restored and migrated config from flat legacy R2 backup"
-    fi
-elif [ -d "$BACKUP_DIR" ]; then
-    echo "R2 mounted at $BACKUP_DIR but no backup data found yet"
-else
-    echo "R2 not mounted, starting fresh"
-fi
-
-# Restore workspace from R2 backup if available
-# CRITICAL: Always restore from R2 when data exists to prevent deploy-overwrite
-# This includes IDENTITY.md, USER.md, MEMORY.md, memory/, and assets/
-WORKSPACE_DIR="/root/clawd"
-# [ -d ] もFUSEマウント直後にfalseを返すことがある（s3fsのlazy listing）
-# [ -d ] チェックを除去し、直接 cat でファイルの存在を確認する（仕様書セクション2）
-FUSE_WORKSPACE_READY=0
-for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-    if [ "$(cat "$BACKUP_DIR/workspace/IDENTITY.md" 2>/dev/null | wc -c)" -gt 10 ] || \
-       [ "$(cat "$BACKUP_DIR/workspace/MEMORY.md" 2>/dev/null | wc -c)" -gt 0 ]; then
-        echo "Workspace files accessible via FUSE after $(( (_i - 1) * 2 ))s"
-        FUSE_WORKSPACE_READY=1
-        break
-    fi
-    sleep 2
-done
-if [ "$FUSE_WORKSPACE_READY" -eq 0 ]; then
-    echo "WARNING: workspace files not accessible via FUSE after 30s, skipping restore"
-fi
-if [ "$FUSE_WORKSPACE_READY" -eq 1 ]; then
-    # タイムスタンプに関わらず、R2にデータがあるならそちらを正とする
-    echo "Restoring workspace from R2 backup to protect against deploy-overwrite..."
-    mkdir -p "$WORKSPACE_DIR"
-    # デプロイされたばかりのテンプレートを消去して、R2の記憶で上書きする
-    rm -rf "${WORKSPACE_DIR:?}"/*
-    # .venv（Python仮想環境、1668ファイル）と.gitを除外してFUSEタイムアウトを防止
-    # FUSEマウント直後はI/Oが不安定な場合があるため、最大3回リトライ
-    RESTORE_SUCCESS=0
-    for RETRY in 1 2 3; do
-        if rsync -a --exclude='.venv' --exclude='.git' "$BACKUP_DIR/workspace/" "$WORKSPACE_DIR/"; then
-            echo "Restored workspace from R2 backup (attempt $RETRY)"
-            RESTORE_SUCCESS=1
-            break
-        else
-            echo "WARNING: Workspace restore attempt $RETRY failed (exit code: $?)"
-            if [ "$RETRY" -lt 3 ]; then
-                echo "Waiting 10 seconds before retry..."
-                sleep 10
+    elif rclone lsf "r2:${R2_BUCKET}/clawdbot/clawdbot.json" 2>/dev/null | grep -q "clawdbot.json"; then
+        # Legacy backup format
+        if should_restore_from_r2; then
+            echo "Restoring from legacy R2 backup (clawdbot/)..."
+            rclone copy "r2:${R2_BUCKET}/clawdbot/" "$CONFIG_DIR/" \
+                --exclude='workspace/**' \
+                || echo "WARNING: Legacy config restore failed"
+            rclone copyto "r2:${R2_BUCKET}/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
+            if [ -f "$CONFIG_DIR/clawdbot.json" ] && [ ! -f "$CONFIG_FILE" ]; then
+                mv "$CONFIG_DIR/clawdbot.json" "$CONFIG_FILE"
             fi
+            echo "Restored and migrated config from legacy R2 backup"
         fi
-    done
-    if [ "$RESTORE_SUCCESS" -eq 0 ]; then
-        echo "ERROR: All 3 workspace restore attempts failed. Starting with deployed template."
+    else
+        echo "No R2 backup found, starting fresh"
+    fi
+
+    # Restore workspace from R2
+    WORKSPACE_DIR="/root/clawd"
+    if rclone lsf "r2:${R2_BUCKET}/workspace/IDENTITY.md" 2>/dev/null | grep -q "IDENTITY.md"; then
+        echo "Restoring workspace from R2 backup..."
+        mkdir -p "$WORKSPACE_DIR"
+        # Restore to a temporary directory first to avoid data loss on failure
+        RESTORE_TMP="${WORKSPACE_DIR}.restore-tmp"
+        rm -rf "${RESTORE_TMP}"
+        mkdir -p "${RESTORE_TMP}"
+        RESTORE_SUCCESS=0
+        for RETRY in 1 2 3; do
+            if rclone copy "r2:${R2_BUCKET}/workspace/" "${RESTORE_TMP}/" \
+                --exclude='.venv/**' \
+                --exclude='.git/**'; then
+                # Verify restore content (IDENTITY.md must exist)
+                if [ -f "${RESTORE_TMP}/IDENTITY.md" ]; then
+                    echo "Restored workspace from R2 backup (attempt $RETRY)"
+                    RESTORE_SUCCESS=1
+                    break
+                else
+                    echo "WARNING: Restore completed but IDENTITY.md missing (attempt $RETRY)"
+                fi
+            else
+                echo "WARNING: Workspace restore attempt $RETRY failed"
+            fi
+            if [ "$RETRY" -lt 3 ]; then
+                echo "Waiting 5 seconds before retry..."
+                sleep 5
+            fi
+        done
+        if [ "$RESTORE_SUCCESS" -eq 1 ]; then
+            # Only replace workspace after confirmed successful restore
+            rm -rf "${WORKSPACE_DIR:?}"/*
+            cp -a "${RESTORE_TMP}"/. "${WORKSPACE_DIR}/"
+            rm -rf "${RESTORE_TMP}"
+            echo "Workspace replaced with R2 backup"
+        else
+            echo "ERROR: All 3 workspace restore attempts failed. Keeping existing workspace."
+            rm -rf "${RESTORE_TMP}"
+        fi
+    else
+        echo "No workspace backup in R2, using deployed template"
+    fi
+
+    # Restore skills from R2
+    SKILLS_DIR="/root/clawd/skills"
+    if should_restore_from_r2; then
+        rclone copy "r2:${R2_BUCKET}/skills/" "$SKILLS_DIR/" 2>/dev/null \
+            && echo "Restored skills from R2 backup" || true
     fi
 fi
 
-# MEMORY.mdが存在しない場合は空ファイル作成（AIのEdit操作でファイル不在エラーを防ぐ）
+# MEMORY.mdが存在しない場合は空ファイル作成
+WORKSPACE_DIR="/root/clawd"
 if [ ! -f "$WORKSPACE_DIR/MEMORY.md" ]; then
     echo "WARNING: MEMORY.md not found after workspace restore. Creating empty placeholder."
     touch "$WORKSPACE_DIR/MEMORY.md"
@@ -164,19 +171,9 @@ if [ -n "$GWS_CLIENT_ID" ] && [ -n "$GWS_CLIENT_SECRET" ] && [ -n "$GWS_REFRESH_
   "refresh_token": "$GWS_REFRESH_TOKEN"
 }
 GWSCREDS
-    # Also set as Application Default Credentials
     mkdir -p /root/.config/gcloud
     cp /root/.config/gws/credentials.json /root/.config/gcloud/application_default_credentials.json
     echo "Google Workspace credentials configured"
-fi
-
-# Restore skills from R2 backup if available
-# [ -d ] と ls -A を除去（FUSE lazy listingで信頼できない）— rsyncで直接試行
-SKILLS_DIR="/root/clawd/skills"
-if should_restore_from_r2; then
-    if rsync -a "$BACKUP_DIR/skills/" "$SKILLS_DIR/" 2>/dev/null; then
-        echo "Restored skills from R2 backup"
-    fi
 fi
 
 # ============================================================
@@ -233,11 +230,6 @@ if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ]; then
 fi
 
 # ============================================================
-# openclaw onboard handles provider/model config, but we need to patch in:
-# - Channel config (Telegram, Discord, Slack)
-# - Gateway token auth
-# - Trusted proxies for sandbox networking
-# - Base URL override for legacy AI Gateway path
 node << 'EOFPATCH'
 const fs = require('fs');
 
@@ -264,7 +256,6 @@ if (process.env.OPENCLAW_GATEWAY_TOKEN) {
     config.gateway.auth.token = process.env.OPENCLAW_GATEWAY_TOKEN;
 }
 
-// Control UI origin check: Cloudflare Access handles upstream auth, allow all origins
 config.gateway.controlUi = config.gateway.controlUi || {};
 config.gateway.controlUi.allowedOrigins = ['*'];
 
@@ -272,15 +263,6 @@ if (process.env.OPENCLAW_DEV_MODE === 'true') {
     config.gateway.controlUi.allowInsecureAuth = true;
 }
 
-// Legacy AI Gateway base URL override:
-// ANTHROPIC_BASE_URL is picked up natively by the Anthropic SDK,
-// so we don't need to patch the provider config. Writing a provider
-// entry without a models array breaks OpenClaw's config validation.
-
-// AI Gateway model override
-// Supports single model (CF_AI_GATEWAY_MODEL) or multiple models (CF_AI_GATEWAY_MODELS)
-// Multiple models example: CF_AI_GATEWAY_MODELS=google/gemini-2.5-flash-lite,google/gemini-2.5-flash,google/gemma-3-12b
-// First model in list becomes primary, others available as fallbacks in Control UI
 const modelList = process.env.CF_AI_GATEWAY_MODELS
     ? process.env.CF_AI_GATEWAY_MODELS.split(',').map(m => m.trim())
     : process.env.CF_AI_GATEWAY_MODEL
@@ -291,7 +273,6 @@ const accountId = process.env.CF_AI_GATEWAY_ACCOUNT_ID;
 const gatewayId = process.env.CF_AI_GATEWAY_GATEWAY_ID;
 const apiKey = process.env.CLOUDFLARE_AI_GATEWAY_API_KEY;
 
-// cf-ai-gw-google-0 を維持（refresh-gcp-token.sh がトークン更新・プロバイダー再構築を担当）
 if (!config.models) config.models = {};
 if (!config.models.providers) config.models.providers = {};
 
@@ -301,17 +282,11 @@ if (!config.agents.defaults.model) config.agents.defaults.model = {};
 config.agents.defaults.model.primary = 'moonshot/kimi-k2.5';
 console.log('Primary model set to: moonshot/kimi-k2.5');
 
-// Workspace path: align with R2 restore location (/root/clawd)
-// Default is /root/.openclaw/workspace — override so bot reads/writes
-// to the same dir that start-openclaw.sh restores from R2.
 if (!config.agents.defaults.workspace) {
     config.agents.defaults.workspace = '/root/clawd';
     console.log('Workspace set to: /root/clawd');
 }
 
-// Telegram configuration
-// Overwrite entire channel object to drop stale keys from old R2 backups
-// that would fail OpenClaw's strict config validation (see #47)
 if (process.env.TELEGRAM_BOT_TOKEN) {
     const dmPolicy = process.env.TELEGRAM_DM_POLICY || 'pairing';
     config.channels.telegram = {
@@ -326,8 +301,6 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
     }
 }
 
-// Discord configuration
-// New schema: dmPolicy and allowFrom are top-level (not nested under dm)
 if (process.env.DISCORD_BOT_TOKEN) {
     const dmPolicy = process.env.DISCORD_DM_POLICY || 'open';
     const discordConfig = {
@@ -343,7 +316,7 @@ if (process.env.DISCORD_BOT_TOKEN) {
         eventQueue: {
             listenerTimeout: 300000,
         },
-        accounts: {},  // Prevent stale R2 accounts from causing tokenSource:"none"
+        accounts: {},
     };
     if (process.env.DISCORD_DM_ALLOW_FROM) {
         discordConfig.allowFrom = process.env.DISCORD_DM_ALLOW_FROM.split(',');
@@ -353,7 +326,6 @@ if (process.env.DISCORD_BOT_TOKEN) {
     config.channels.discord = discordConfig;
 }
 
-// Slack configuration
 if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
     config.channels.slack = {
         botToken: process.env.SLACK_BOT_TOKEN,
@@ -362,26 +334,21 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
     };
 }
 
-// Ensure Discord plugin is enabled if Discord channel exists
 if (config.channels.discord && config.channels.discord.enabled) {
     config.plugins = config.plugins || {};
     config.plugins.entries = config.plugins.entries || {};
     config.plugins.entries.discord = { enabled: true };
 }
 
-// Fix ackReactionScope to prevent annoying bot reactions in DMs
 config.messages = config.messages || {};
 config.messages.ackReactionScope = "group-mentions";
 
-// Tools profile: coding enables exec, file read/write, web search, memory, etc.
 config.tools = config.tools || {};
 config.tools.profile = 'coding';
-// Disable exec approval prompt and allow all commands (no Approve dialog in Control UI)
 config.tools.exec = config.tools.exec || {};
 config.tools.exec.ask = 'off';
 config.tools.exec.security = 'full';
 
-// Moonshot(Kimi) provider追加（既存プロバイダーは維持）
 if (process.env.MOONSHOT_API_KEY) {
     if (!config.models) config.models = {};
     if (!config.models.providers) config.models.providers = {};
@@ -408,14 +375,12 @@ if (process.env.MOONSHOT_API_KEY) {
     console.log('[patch] moonshot provider added');
 }
 
-// Enable OpenAI-compatible chat completions endpoint
 if (!config.gateway) config.gateway = {};
 if (!config.gateway.http) config.gateway.http = {};
 if (!config.gateway.http.endpoints) config.gateway.http.endpoints = {};
 config.gateway.http.endpoints.chatCompletions = { enabled: true };
 console.log('[patch] chatCompletions endpoint enabled');
 
-// Add kimi-k2.5 to agent model allowlist and set as primary
 if (!config.agents) config.agents = {};
 if (!config.agents.defaults) config.agents.defaults = {};
 if (!config.agents.defaults.models) config.agents.defaults.models = {};
@@ -450,12 +415,8 @@ echo "Gateway will be available on port 18789"
 
 echo "Dev mode: ${OPENCLAW_DEV_MODE:-false}"
 
-# Start gateway directly (ADC handles Vertex AI token refresh automatically)
-# Use exec to replace shell with gateway process — keeps process alive across DO sleep cycles.
-# Port check in process.ts handles SDK process tracking (port responding = gateway alive).
 rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
 rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
-# Release startup lock before exec to prevent lock inheritance by gateway process
 exec 9>&-
 if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
     echo "Starting gateway with token auth..."
