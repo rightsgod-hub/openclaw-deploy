@@ -1,6 +1,7 @@
 import type { Sandbox } from '@cloudflare/sandbox';
 import type { MoltbotEnv } from '../types';
 import { getR2BucketName } from '../config';
+import { execWithTimeout } from './exec';
 import { mountR2Storage } from './r2';
 
 // CF Container sandboxではkill/pkillが効かないため、フラグで並行実行を防止する
@@ -54,9 +55,9 @@ async function _syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncResult>
   // Determine config directory
   let configDir = '/root/.openclaw';
   try {
-    const checkNew = await sandbox.exec('test -f /root/.openclaw/openclaw.json', { timeout: 5000 });
+    const checkNew = await execWithTimeout(sandbox, 'test -f /root/.openclaw/openclaw.json', { timeout: 5000 });
     if (checkNew.exitCode !== 0) {
-      const checkLegacy = await sandbox.exec('test -f /root/.clawdbot/clawdbot.json', { timeout: 5000 });
+      const checkLegacy = await execWithTimeout(sandbox, 'test -f /root/.clawdbot/clawdbot.json', { timeout: 5000 });
       if (checkLegacy.exitCode === 0) {
         configDir = '/root/.clawdbot';
       } else {
@@ -77,7 +78,7 @@ async function _syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncResult>
 
   // Verify workspace has real content before syncing
   try {
-    const identityCheck = await sandbox.exec(
+    const identityCheck = await execWithTimeout(sandbox,
       'test -f /root/clawd/IDENTITY.md && ! grep -q "Fill this in" /root/clawd/IDENTITY.md',
       { timeout: 5000 }
     );
@@ -100,7 +101,7 @@ async function _syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncResult>
   const syncCmd = `rclone copy ${configDir}/ ${r2}/openclaw/ --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' --exclude='workspace/**' --no-update-modtime && rclone copy /root/clawd/ ${r2}/workspace/ --exclude='skills/**' --exclude='.venv/**' --exclude='.git/**' --no-update-modtime && rclone copy /root/clawd/skills/ ${r2}/skills/ --no-update-modtime && date -Iseconds > /tmp/.r2-last-sync && rclone copyto /tmp/.r2-last-sync ${r2}/.last-sync`;
 
   try {
-    const syncResult = await sandbox.exec(syncCmd, { timeout: 60000 });
+    const syncResult = await execWithTimeout(sandbox, syncCmd, { timeout: 60000 });
 
     if (syncResult.exitCode !== 0) {
       return {
@@ -111,7 +112,7 @@ async function _syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncResult>
     }
 
     // Read timestamp back to confirm
-    const tsResult = await sandbox.exec(
+    const tsResult = await execWithTimeout(sandbox,
       `rclone cat ${r2}/.last-sync 2>/dev/null || cat /tmp/.r2-last-sync 2>/dev/null || echo ""`,
       { timeout: 10000 },
     );

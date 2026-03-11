@@ -1,21 +1,15 @@
 import { Hono } from 'hono';
 import { getSandbox, type SandboxOptions } from '@cloudflare/sandbox';
 import type { AppEnv, MoltbotEnv } from '../types';
-import { findExistingMoltbotProcess, ensureMoltbotGateway } from '../gateway';
+import { execWithTimeout, findExistingMoltbotProcess, ensureMoltbotGateway } from '../gateway';
 
 /**
- * Build sandbox options based on environment configuration.
+ * Build sandbox options. keepAlive is intentionally disabled — it causes
+ * 30s alarm loops that block sandbox.exec() and destabilize the DO.
  * Duplicated from index.ts to avoid circular dependencies.
  */
 function buildSandboxOptions(env: MoltbotEnv): SandboxOptions {
-  const sleepAfter = env.SANDBOX_SLEEP_AFTER?.toLowerCase() || 'never';
-
-  // 'never' means keep the container alive indefinitely
-  if (sleepAfter === 'never') {
-    return { keepAlive: true };
-  }
-
-  // Otherwise, use the specified duration
+  const sleepAfter = env.SANDBOX_SLEEP_AFTER || '10m';
   return { sleepAfter };
 }
 
@@ -31,11 +25,11 @@ debug.get('/version', async (c) => {
   const sandbox = c.get('sandbox');
   try {
     // Get OpenClaw version
-    const versionResult = await sandbox.exec('openclaw --version', { timeout: 5000 });
+    const versionResult = await execWithTimeout(sandbox,'openclaw --version', { timeout: 5000 });
     const moltbotVersion = (versionResult.stdout || versionResult.stderr || '').trim();
 
     // Get node version
-    const nodeResult = await sandbox.exec('node --version', { timeout: 5000 });
+    const nodeResult = await execWithTimeout(sandbox,'node --version', { timeout: 5000 });
     const nodeVersion = (nodeResult.stdout || '').trim();
 
     return c.json({
@@ -144,7 +138,7 @@ debug.get('/cli', async (c) => {
   const cmd = c.req.query('cmd') || 'openclaw --help';
 
   try {
-    const result = await sandbox.exec(cmd, { timeout: 15000 });
+    const result = await execWithTimeout(sandbox,cmd, { timeout: 15000 });
     return c.json({
       command: cmd,
       status: result.exitCode === 0 ? 'completed' : 'failed',
@@ -368,7 +362,7 @@ debug.get('/container-config', async (c) => {
   const sandbox = c.get('sandbox');
 
   try {
-    const result = await sandbox.exec('cat /root/.openclaw/openclaw.json', { timeout: 5000 });
+    const result = await execWithTimeout(sandbox,'cat /root/.openclaw/openclaw.json', { timeout: 5000 });
     const stdout = result.stdout || '';
     const stderr = result.stderr || '';
 

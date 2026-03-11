@@ -1,6 +1,7 @@
 import type { Sandbox } from '@cloudflare/sandbox';
 import type { MoltbotEnv } from '../types';
 import { getR2BucketName } from '../config';
+import { execWithTimeout } from './exec';
 
 // Module-level cache: once rclone is configured, skip on subsequent calls.
 // This flag resets naturally when the Durable Object resets (module reloads).
@@ -55,8 +56,8 @@ export async function mountR2Storage(sandbox: Sandbox, env: MoltbotEnv): Promise
     // Write rclone config using shell heredoc (no node dependency, INI stays INI)
     const mkdirCmd = `mkdir -p /root/.config/rclone`;
     const writeCmd = `cat > /root/.config/rclone/rclone.conf << 'RCLONEEOF'\n${configContent}RCLONEEOF`;
-    await sandbox.exec(mkdirCmd, { timeout: 5000 });
-    await sandbox.exec(writeCmd, { timeout: 5000 });
+    await execWithTimeout(sandbox, mkdirCmd, { timeout: 5000 });
+    await execWithTimeout(sandbox, writeCmd, { timeout: 5000 });
     rcloneConfigured = true;
     console.log('rclone configured for R2 bucket:', bucketName, 'at', endpoint);
     return true;

@@ -3,6 +3,7 @@ import type { AppEnv } from '../types';
 import { createAccessMiddleware } from '../auth';
 import {
   ensureMoltbotGateway,
+  execWithTimeout,
   killAllGatewayProcesses,
   mountR2Storage,
   syncToR2,
@@ -41,7 +42,7 @@ adminApi.get('/devices', async (c) => {
     // Must specify --url and --token (OpenClaw v2026.2.3 requires explicit credentials with --url)
     const token = c.env.MOLTBOT_GATEWAY_TOKEN;
     const tokenArg = token ? ` --token ${token}` : '';
-    const result = await sandbox.exec(
+    const result = await execWithTimeout(sandbox,
       `openclaw devices list --json --url ws://localhost:18789${tokenArg}`,
       { timeout: CLI_TIMEOUT_MS },
     );
@@ -95,7 +96,7 @@ adminApi.post('/devices/:requestId/approve', async (c) => {
     // Run OpenClaw CLI to approve the device
     const token = c.env.MOLTBOT_GATEWAY_TOKEN;
     const tokenArg = token ? ` --token ${token}` : '';
-    const result = await sandbox.exec(
+    const result = await execWithTimeout(sandbox,
       `openclaw devices approve ${requestId} --url ws://localhost:18789${tokenArg}`,
       { timeout: CLI_TIMEOUT_MS },
     );
@@ -129,7 +130,7 @@ adminApi.post('/devices/approve-all', async (c) => {
     // First, get the list of pending devices
     const token = c.env.MOLTBOT_GATEWAY_TOKEN;
     const tokenArg = token ? ` --token ${token}` : '';
-    const listResult = await sandbox.exec(
+    const listResult = await execWithTimeout(sandbox,
       `openclaw devices list --json --url ws://localhost:18789${tokenArg}`,
       { timeout: CLI_TIMEOUT_MS },
     );
@@ -157,7 +158,7 @@ adminApi.post('/devices/approve-all', async (c) => {
     for (const device of pending) {
       try {
         // eslint-disable-next-line no-await-in-loop -- sequential device approval required
-        const approveResult = await sandbox.exec(
+        const approveResult = await execWithTimeout(sandbox,
           `openclaw devices approve ${device.requestId} --url ws://localhost:18789${tokenArg}`,
           { timeout: CLI_TIMEOUT_MS },
         );
@@ -211,7 +212,7 @@ adminApi.get('/storage', async (c) => {
 
       // Check for sync marker file via rclone
       const bucket = getR2BucketName(c.env);
-      const result = await sandbox.exec(
+      const result = await execWithTimeout(sandbox,
         `rclone cat r2:${bucket}/.last-sync 2>/dev/null || echo ""`,
         { timeout: 5000 },
       );
@@ -360,7 +361,7 @@ adminApi.delete('/devices/:deviceId', async (c) => {
     const tokenArg = token ? ` --token ${token}` : '';
 
     // Try CLI removal first (in case a future OpenClaw version adds it)
-    const result = await sandbox.exec(
+    const result = await execWithTimeout(sandbox,
       `openclaw devices remove ${deviceId} --url ws://localhost:18789${tokenArg} 2>&1`,
       { timeout: CLI_TIMEOUT_MS },
     );
@@ -377,7 +378,7 @@ adminApi.delete('/devices/:deviceId', async (c) => {
 
     // Fallback: find and edit pairing data files directly
     // OpenClaw stores device data in JSON files under its config directory
-    const findResult = await sandbox.exec(
+    const findResult = await execWithTimeout(sandbox,
       `grep -rl "${deviceId}" /root/.openclaw/ /home/*/.openclaw/ 2>/dev/null | head -10`,
       { timeout: 10000 },
     );
@@ -399,7 +400,7 @@ adminApi.delete('/devices/:deviceId', async (c) => {
       if (!file.endsWith('.json')) continue;
 
       // eslint-disable-next-line no-await-in-loop
-      const editResult = await sandbox.exec(
+      const editResult = await execWithTimeout(sandbox,
         `node -e "
 const fs = require('fs');
 try {
@@ -471,7 +472,7 @@ adminApi.post('/token-refresh', async (c) => {
     console.log('Token refresh triggered from Admin UI');
     const gatewayToken = c.env.MOLTBOT_GATEWAY_TOKEN || '';
     const refreshCmd = `OPENCLAW_GATEWAY_TOKEN="${gatewayToken}" bash /usr/local/bin/refresh-gcp-token.sh`;
-    const refreshResult = await sandbox.exec(refreshCmd, { timeout: 20000 });
+    const refreshResult = await execWithTimeout(sandbox,refreshCmd, { timeout: 20000 });
     const output = refreshResult.stdout?.trim() || '';
     const exitCode = refreshResult.exitCode ?? 0;
     console.log('Token refresh result (exit=' + exitCode + '):', output);
@@ -485,7 +486,7 @@ adminApi.post('/token-refresh', async (c) => {
       console.log('config.apply failed, killing all + restarting gateway...');
       // Clear refresh timestamp so start-openclaw.sh's refresh won't skip
       // (R2 restore overwrites the fresh token in config file)
-      await sandbox.exec('rm -f /tmp/gcp-token-last-refresh', { timeout: 5000 }).catch(() => {});
+      await execWithTimeout(sandbox,'rm -f /tmp/gcp-token-last-refresh', { timeout: 5000 }).catch(() => {});
       await killAllGatewayProcesses(sandbox);
       const bootPromise = ensureMoltbotGateway(sandbox, c.env).catch((err) => {
         console.error('Gateway restart after token refresh failed:', err);
@@ -545,7 +546,7 @@ adminApi.get('/token-status', async (c) => {
   }
 
   try {
-    const result = await sandbox.exec(
+    const result = await execWithTimeout(sandbox,
       'cat /tmp/gcp-token-last-refresh 2>/dev/null || echo "0"',
       { timeout: 5000 },
     );
