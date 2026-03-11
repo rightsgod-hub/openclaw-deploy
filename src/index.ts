@@ -456,8 +456,18 @@ async function scheduled(
           await gatewayProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
           console.log('[cron] Gateway is responsive, proceeding with sync');
         } catch {
-          console.log('[cron] Gateway exists but port not ready, skipping sync');
-          return;
+          // Process exists but port not ready — could be stale after deploy/restart.
+          // Kill and restart instead of skipping forever.
+          console.log('[cron] Gateway process exists but port not ready, restarting...');
+          try {
+            await killAllGatewayProcesses(sandbox);
+            await ensureMoltbotGateway(sandbox, env);
+            console.log('[cron] Gateway restarted successfully');
+            justStarted = true;
+          } catch (restartErr) {
+            console.error('[cron] Gateway restart failed:', restartErr);
+            return;
+          }
         }
       } else {
         console.log('[cron] Gateway not running, attempting to start...');
