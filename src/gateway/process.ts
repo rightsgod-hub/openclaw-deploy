@@ -69,24 +69,24 @@ export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Proc
  * @returns The running gateway process
  */
 /**
- * Check if gateway port is responding via curl inside the sandbox.
+ * Check if gateway port is responding via containerFetch (no exec).
  * Returns true if port 18789 is listening and accepting connections.
  */
 export async function isGatewayPortResponding(sandbox: Sandbox): Promise<boolean> {
   try {
-    // Use TCP-level check (no -f flag) so any HTTP response means port is alive.
-    // /healthz does not exist in OpenClaw — using it with -f always returned false.
-    const portCheck = await sandbox.exec(
-      'curl -s --connect-timeout 2 --max-time 3 -o /dev/null http://localhost:18789/ 2>/dev/null && echo "yes" || echo "no"',
-      { timeout: 5000 },
+    await sandbox.containerFetch(
+      new Request('http://localhost:18789/', {
+        signal: AbortSignal.timeout(3000),
+      }),
+      MOLTBOT_PORT,
     );
-    return portCheck.stdout?.trim() === 'yes';
+    return true;
   } catch {
     return false;
   }
 }
 
-/** Kill ALL gateway processes (SDK + OS level) and clean lock files. */
+/** Kill all SDK-tracked gateway processes. */
 export async function killAllGatewayProcesses(sandbox: Sandbox): Promise<void> {
   // 1. Kill all SDK-tracked processes
   try {
@@ -97,27 +97,12 @@ export async function killAllGatewayProcesses(sandbox: Sandbox): Promise<void> {
       }
     }
   } catch { /* ignore */ }
-  // 2. OS-level kill
-  try {
-    await sandbox.exec(
-      'PID=$(ss -tlnp | grep ":18789" | grep -oP \'pid=\\K[0-9]+\' | head -1); [ -n "$PID" ] && kill -9 "$PID" 2>/dev/null; pkill -9 -f "openclaw" 2>/dev/null; pkill -9 -f "start-openclaw" 2>/dev/null; true',
-      { timeout: 5000 },
-    );
-  } catch { /* ignore */ }
-  // 3. Remove lock files
-  try {
-    await sandbox.exec(
-      'rm -f /tmp/openclaw-start.lock /tmp/openclaw-gateway.lock /root/.openclaw/gateway.lock',
-      { timeout: 5000 },
-    );
-  } catch { /* ignore */ }
   await new Promise((r) => setTimeout(r, 2000));
 }
 
 export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): Promise<Process | null> {
-  // Mount R2 storage for persistent data (non-blocking if not configured)
-  // R2 is used as a backup - the startup script will restore from it on boot
-  await mountR2Storage(sandbox, env);
+  // R2 mounting is handled by start-openclaw.sh internally (env vars → rclone config → R2 restore).
+  // Worker-side mountR2Storage exec was removed to eliminate exec dependency during DO alarm.
 
   // Port check first: if port is responding, the gateway is alive.
   // Trust the port over the SDK process list, which can lose track of

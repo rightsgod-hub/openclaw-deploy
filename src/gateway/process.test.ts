@@ -30,27 +30,31 @@ describe('isGatewayPortResponding', () => {
     suppressConsole();
   });
 
-  it('returns true when port is responding', async () => {
+  it('returns true when containerFetch succeeds', async () => {
     const sandbox = {
-      exec: vi.fn().mockResolvedValue({ exitCode: 0, stdout: 'yes\n', stderr: '', command: '', durationMs: 0 }),
+      containerFetch: vi.fn().mockResolvedValue(new Response('ok')),
     } as unknown as Sandbox;
 
     const result = await isGatewayPortResponding(sandbox);
     expect(result).toBe(true);
+    expect(sandbox.containerFetch).toHaveBeenCalledWith(
+      expect.any(Request),
+      18789,
+    );
   });
 
-  it('returns false when port is not responding', async () => {
+  it('returns false when containerFetch throws (port not listening)', async () => {
     const sandbox = {
-      exec: vi.fn().mockResolvedValue({ exitCode: 0, stdout: 'no\n', stderr: '', command: '', durationMs: 0 }),
+      containerFetch: vi.fn().mockRejectedValue(new Error('connection refused')),
     } as unknown as Sandbox;
 
     const result = await isGatewayPortResponding(sandbox);
     expect(result).toBe(false);
   });
 
-  it('returns false when exec throws', async () => {
+  it('returns false when containerFetch times out', async () => {
     const sandbox = {
-      exec: vi.fn().mockRejectedValue(new Error('timeout')),
+      containerFetch: vi.fn().mockRejectedValue(new Error('AbortError: timeout')),
     } as unknown as Sandbox;
 
     const result = await isGatewayPortResponding(sandbox);
@@ -206,16 +210,12 @@ describe('ensureMoltbotGateway', () => {
   }
 
   it('does not kill gateway when port is responding (even without SDK process)', async () => {
-    const execMock = vi.fn()
-      // 1st call: port check -> yes (port is responding)
-      .mockResolvedValueOnce({ exitCode: 0, stdout: 'yes\n', stderr: '', command: '', durationMs: 0 })
-      // Any subsequent exec calls
-      .mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 });
+    const containerFetchMock = vi.fn().mockResolvedValue(new Response('ok'));
 
     const sandbox = {
       mountBucket: vi.fn().mockResolvedValue(undefined),
       listProcesses: vi.fn().mockResolvedValue([]),
-      exec: execMock,
+      containerFetch: containerFetchMock,
       startProcess: vi.fn(),
     } as unknown as Sandbox;
 
@@ -223,13 +223,7 @@ describe('ensureMoltbotGateway', () => {
 
     const result = await ensureMoltbotGateway(sandbox, env);
 
-    // Port responding + no SDK process -> should NOT kill, NOT start any process
-    const pkillCalls = execMock.mock.calls.filter(
-      (call: any[]) => typeof call[0] === 'string' && call[0].includes('pkill'),
-    );
-    expect(pkillCalls).toHaveLength(0);
-
-    // Should NOT have started any process
+    // Port responding + no SDK process -> should NOT start any process
     expect(sandbox.startProcess).not.toHaveBeenCalled();
     expect(result).toBeNull();
   });
@@ -237,15 +231,12 @@ describe('ensureMoltbotGateway', () => {
   it('returns existing process when port is responding and SDK process found', async () => {
     const gatewayProc = createRunningMockProcess({ id: 'gateway-1', command: 'start-openclaw.sh' });
 
-    const execMock = vi.fn()
-      // 1st call: port check -> yes (port is responding)
-      .mockResolvedValueOnce({ exitCode: 0, stdout: 'yes\n', stderr: '', command: '', durationMs: 0 })
-      .mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 });
+    const containerFetchMock = vi.fn().mockResolvedValue(new Response('ok'));
 
     const sandbox = {
       mountBucket: vi.fn().mockResolvedValue(undefined),
       listProcesses: vi.fn().mockResolvedValue([gatewayProc]),
-      exec: execMock,
+      containerFetch: containerFetchMock,
       startProcess: vi.fn(),
     } as unknown as Sandbox;
 
@@ -262,30 +253,19 @@ describe('ensureMoltbotGateway', () => {
   it('runs cleanup and starts new gateway when port is not responding', async () => {
     const mockProcess = createRunningMockProcess();
 
-    const execMock = vi.fn()
-      // 1st call: port check -> no (port not responding)
-      .mockResolvedValueOnce({ exitCode: 0, stdout: 'no\n', stderr: '', command: '', durationMs: 0 })
-      // 2nd call: pkill cleanup
-      .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 })
-      // Any subsequent exec calls
-      .mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', command: '', durationMs: 0 });
+    // containerFetch rejects = port not responding
+    const containerFetchMock = vi.fn().mockRejectedValue(new Error('connection refused'));
 
     const sandbox = {
       mountBucket: vi.fn().mockResolvedValue(undefined),
       listProcesses: vi.fn().mockResolvedValue([]),
-      exec: execMock,
+      containerFetch: containerFetchMock,
       startProcess: vi.fn().mockResolvedValue(mockProcess),
     } as unknown as Sandbox;
 
     const env = { Sandbox: {}, ASSETS: {}, MOLTBOT_BUCKET: {} } as any;
 
     await ensureMoltbotGateway(sandbox, env);
-
-    // pkill should be called (port is free, so cleanup runs before starting new gateway)
-    const pkillCalls = execMock.mock.calls.filter(
-      (call: any[]) => typeof call[0] === 'string' && call[0].includes('pkill'),
-    );
-    expect(pkillCalls).toHaveLength(1);
 
     // Should have started a new gateway process
     expect(sandbox.startProcess).toHaveBeenCalledWith(

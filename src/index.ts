@@ -26,7 +26,7 @@ import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
 import type { AppEnv, MoltbotEnv } from './types';
 import { MOLTBOT_PORT } from './config';
 import { createAccessMiddleware } from './auth';
-import { ensureMoltbotGateway, findExistingMoltbotProcess, isGatewayPortResponding, killAllGatewayProcesses, mountR2Storage, syncToR2 } from './gateway';
+import { ensureMoltbotGateway, findExistingMoltbotProcess, isGatewayPortResponding, killAllGatewayProcesses, syncToR2 } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
 import loadingPageHtml from './assets/loading.html';
@@ -456,6 +456,8 @@ async function scheduled(
       new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 8000)),
     ]);
 
+    let justStarted = false;
+
     if (portResponding) {
       console.log('[cron] Port 18789 is responding, gateway is running');
     } else {
@@ -475,11 +477,20 @@ async function scheduled(
         try {
           await ensureMoltbotGateway(sandbox, env);
           console.log('[cron] Gateway started successfully');
+          justStarted = true;
         } catch (startError) {
           console.error('[cron] Failed to start gateway:', startError);
           return;
         }
       }
+    }
+
+    // Skip exec-dependent operations when gateway was just started.
+    // DO alarm may still be running (180s cycle), blocking sandbox.exec() calls.
+    // GCP refresh and R2 sync will run on the next cron cycle when alarm is idle.
+    if (justStarted) {
+      console.log('[cron] Gateway just started, deferring sync/refresh to next cycle');
+      return;
     }
 
     // Refresh GCP access token if Vertex AI is configured
@@ -512,9 +523,6 @@ async function scheduled(
         console.error('[cron] Token refresh failed:', e);
       }
     }
-
-    // Ensure rclone is configured before sync
-    await mountR2Storage(sandbox, env);
 
     console.log('[cron] Starting backup sync to R2...');
     const result = await syncToR2(sandbox, env);
