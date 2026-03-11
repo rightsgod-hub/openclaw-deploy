@@ -26,7 +26,7 @@ import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
 import type { AppEnv, MoltbotEnv } from './types';
 import { MOLTBOT_PORT } from './config';
 import { createAccessMiddleware } from './auth';
-import { ensureMoltbotGateway, findExistingMoltbotProcess, isGatewayPortResponding, syncToR2 } from './gateway';
+import { ensureMoltbotGateway, findExistingMoltbotProcess, isGatewayPortResponding, killAllGatewayProcesses, syncToR2 } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
 import loadingPageHtml from './assets/loading.html';
@@ -424,7 +424,7 @@ app.all('*', async (c) => {
 
 /**
  * Scheduled handler for cron triggers.
- * Backup-only: syncs moltbot data to R2. Does NOT start gateway (HTTP requests trigger that).
+ * Syncs moltbot config/state from container to R2 for persistence.
  */
 async function scheduled(
   _event: ScheduledEvent,
@@ -432,22 +432,86 @@ async function scheduled(
   _ctx: ExecutionContext,
 ): Promise<void> {
   try {
-    console.log('[cron] Cron triggered — hourly backup');
+    console.log('[cron] Cron triggered');
     const options = buildSandboxOptions(env);
     const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
-    // Canary guard: skip cycle if DO doesn't respond within 3s
+    // Check port first: if port is responding, gateway is alive regardless of SDK process state
+    // Wrap with timeout: sandbox stub calls hang during DO resets → Worker exceededCpu without this
     const portResponding = await Promise.race([
       isGatewayPortResponding(sandbox),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000)),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 8000)),
     ]);
 
-    if (!portResponding) {
-      console.log('[cron] Gateway not responding, skipping backup');
+    let justStarted = false;
+
+    if (portResponding) {
+      console.log('[cron] Port 18789 is responding, gateway is running');
+    } else {
+      // Port not responding - try to find and verify a process, or start a new one
+      const gatewayProcess = await findExistingMoltbotProcess(sandbox);
+      if (gatewayProcess) {
+        try {
+          console.log('[cron] Verifying gateway responsiveness...');
+          await gatewayProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
+          console.log('[cron] Gateway is responsive, proceeding with sync');
+        } catch {
+          console.log('[cron] Gateway exists but port not ready, skipping sync');
+          return;
+        }
+      } else {
+        console.log('[cron] Gateway not running, attempting to start...');
+        try {
+          await ensureMoltbotGateway(sandbox, env);
+          console.log('[cron] Gateway started successfully');
+          justStarted = true;
+        } catch (startError) {
+          console.error('[cron] Failed to start gateway:', startError);
+          return;
+        }
+      }
+    }
+
+    // Skip exec-dependent operations when gateway was just started.
+    // DO alarm may still be running (180s cycle), blocking sandbox.exec() calls.
+    // GCP refresh and R2 sync will run on the next cron cycle when alarm is idle.
+    if (justStarted) {
+      console.log('[cron] Gateway just started, deferring sync/refresh to next cycle');
       return;
     }
 
-    console.log('[cron] Gateway is running, starting backup sync to R2...');
+    // Refresh GCP access token if Vertex AI is configured
+    if (env.GCP_SERVICE_ACCOUNT_KEY) {
+      try {
+        console.log('[cron] Refreshing GCP access token...');
+        const gatewayToken = env.MOLTBOT_GATEWAY_TOKEN || '';
+        const refreshCmd = `OPENCLAW_GATEWAY_TOKEN="${gatewayToken}" bash /usr/local/bin/refresh-gcp-token.sh`;
+        const refreshResult = await sandbox.exec(refreshCmd, { timeout: 20000 });
+        const output = refreshResult.stdout?.trim() || '';
+        const exitCode = refreshResult.exitCode ?? 0;
+        console.log('[cron] Token refresh result (exit=' + exitCode + '):', output || '(no output)');
+
+        // Exit code 2 = token written to file but config.apply failed
+        // Gateway must be restarted to pick up the new token from disk
+        if (exitCode === 2) {
+          console.log('[cron] config.apply failed, restarting gateway to load new token...');
+          try {
+            // Clear refresh timestamp so start-openclaw.sh's refresh-gcp-token.sh
+            // won't skip due to threshold (R2 restore overwrites the fresh token)
+            await sandbox.exec('rm -f /tmp/gcp-token-last-refresh', { timeout: 5000 });
+            await killAllGatewayProcesses(sandbox);
+            await ensureMoltbotGateway(sandbox, env);
+            console.log('[cron] Gateway restarted with fresh GCP token');
+          } catch (restartErr) {
+            console.error('[cron] Gateway restart after token refresh failed:', restartErr);
+          }
+        }
+      } catch (e) {
+        console.error('[cron] Token refresh failed:', e);
+      }
+    }
+
+    console.log('[cron] Starting backup sync to R2...');
     const result = await syncToR2(sandbox, env);
 
     if (result.success) {

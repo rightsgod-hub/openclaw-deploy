@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { createAccessMiddleware } from '../auth';
 import {
+  callRpc,
   ensureMoltbotGateway,
   execWithTimeout,
   killAllGatewayProcesses,
@@ -9,9 +10,6 @@ import {
   syncToR2,
 } from '../gateway';
 import { getR2BucketName } from '../config';
-
-// CLI commands can take 10-15 seconds to complete due to WebSocket connection overhead
-const CLI_TIMEOUT_MS = 20000;
 
 /**
  * API routes
@@ -38,42 +36,9 @@ adminApi.get('/devices', async (c) => {
     // Ensure moltbot is running first
     await ensureMoltbotGateway(sandbox, c.env);
 
-    // Run OpenClaw CLI to list devices
-    // Must specify --url and --token (OpenClaw v2026.2.3 requires explicit credentials with --url)
-    const token = c.env.MOLTBOT_GATEWAY_TOKEN;
-    const tokenArg = token ? ` --token ${token}` : '';
-    const result = await execWithTimeout(sandbox,
-      `openclaw devices list --json --url ws://localhost:18789${tokenArg}`,
-      { timeout: CLI_TIMEOUT_MS },
-    );
-    const stdout = result.stdout || '';
-    const stderr = result.stderr || '';
-
-    // Try to parse JSON output
-    try {
-      // Find JSON in output (may have other log lines)
-      const jsonMatch = stdout.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const data = JSON.parse(jsonMatch[0]);
-        return c.json(data);
-      }
-
-      // If no JSON found, return raw output for debugging
-      return c.json({
-        pending: [],
-        paired: [],
-        raw: stdout,
-        stderr,
-      });
-    } catch {
-      return c.json({
-        pending: [],
-        paired: [],
-        raw: stdout,
-        stderr,
-        parseError: 'Failed to parse CLI output',
-      });
-    }
+    const token = c.env.MOLTBOT_GATEWAY_TOKEN || '';
+    const data = await callRpc(sandbox, token, 'device.pair.list');
+    return c.json(data as Record<string, unknown>);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return c.json({ error: errorMessage }, 500);
@@ -93,25 +58,13 @@ adminApi.post('/devices/:requestId/approve', async (c) => {
     // Ensure moltbot is running first
     await ensureMoltbotGateway(sandbox, c.env);
 
-    // Run OpenClaw CLI to approve the device
-    const token = c.env.MOLTBOT_GATEWAY_TOKEN;
-    const tokenArg = token ? ` --token ${token}` : '';
-    const result = await execWithTimeout(sandbox,
-      `openclaw devices approve ${requestId} --url ws://localhost:18789${tokenArg}`,
-      { timeout: CLI_TIMEOUT_MS },
-    );
-    const stdout = result.stdout || '';
-    const stderr = result.stderr || '';
-
-    // Check for success indicators (case-insensitive, CLI outputs "Approved ...")
-    const success = stdout.toLowerCase().includes('approved') || result.exitCode === 0;
+    const token = c.env.MOLTBOT_GATEWAY_TOKEN || '';
+    await callRpc(sandbox, token, 'device.pair.approve', { requestId });
 
     return c.json({
-      success,
+      success: true,
       requestId,
-      message: success ? 'Device approved' : 'Approval may have failed',
-      stdout,
-      stderr,
+      message: 'Device approved',
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -127,26 +80,11 @@ adminApi.post('/devices/approve-all', async (c) => {
     // Ensure moltbot is running first
     await ensureMoltbotGateway(sandbox, c.env);
 
-    // First, get the list of pending devices
-    const token = c.env.MOLTBOT_GATEWAY_TOKEN;
-    const tokenArg = token ? ` --token ${token}` : '';
-    const listResult = await execWithTimeout(sandbox,
-      `openclaw devices list --json --url ws://localhost:18789${tokenArg}`,
-      { timeout: CLI_TIMEOUT_MS },
-    );
-    const stdout = listResult.stdout || '';
+    const token = c.env.MOLTBOT_GATEWAY_TOKEN || '';
 
-    // Parse pending devices
-    let pending: Array<{ requestId: string }> = [];
-    try {
-      const jsonMatch = stdout.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const data = JSON.parse(jsonMatch[0]);
-        pending = data.pending || [];
-      }
-    } catch {
-      return c.json({ error: 'Failed to parse device list', raw: stdout }, 500);
-    }
+    // Get list of pending devices via RPC
+    const listData = await callRpc(sandbox, token, 'device.pair.list') as { pending?: Array<{ requestId: string }> };
+    const pending = listData?.pending || [];
 
     if (pending.length === 0) {
       return c.json({ approved: [], message: 'No pending devices to approve' });
@@ -158,14 +96,8 @@ adminApi.post('/devices/approve-all', async (c) => {
     for (const device of pending) {
       try {
         // eslint-disable-next-line no-await-in-loop -- sequential device approval required
-        const approveResult = await execWithTimeout(sandbox,
-          `openclaw devices approve ${device.requestId} --url ws://localhost:18789${tokenArg}`,
-          { timeout: CLI_TIMEOUT_MS },
-        );
-        const success =
-          approveResult.stdout?.toLowerCase().includes('approved') || approveResult.exitCode === 0;
-
-        results.push({ requestId: device.requestId, success });
+        await callRpc(sandbox, token, 'device.pair.approve', { requestId: device.requestId });
+        results.push({ requestId: device.requestId, success: true });
       } catch (err) {
         results.push({
           requestId: device.requestId,
@@ -348,7 +280,7 @@ adminApi.delete('/devices/:deviceId', async (c) => {
     return c.json({ error: 'deviceId is required' }, 400);
   }
 
-  // Validate deviceId to prevent command injection (alphanumeric, hyphens, underscores only)
+  // Validate deviceId format (alphanumeric, hyphens, underscores only)
   if (!/^[\w-]+$/.test(deviceId)) {
     return c.json({ error: 'Invalid deviceId format' }, 400);
   }
@@ -357,103 +289,14 @@ adminApi.delete('/devices/:deviceId', async (c) => {
     // Ensure moltbot is running first
     await ensureMoltbotGateway(sandbox, c.env);
 
-    const token = c.env.MOLTBOT_GATEWAY_TOKEN;
-    const tokenArg = token ? ` --token ${token}` : '';
+    const token = c.env.MOLTBOT_GATEWAY_TOKEN || '';
+    await callRpc(sandbox, token, 'device.pair.remove', { deviceId });
 
-    // Try CLI removal first (in case a future OpenClaw version adds it)
-    const result = await execWithTimeout(sandbox,
-      `openclaw devices remove ${deviceId} --url ws://localhost:18789${tokenArg} 2>&1`,
-      { timeout: CLI_TIMEOUT_MS },
-    );
-    const stdout = result.stdout || '';
-
-    // If CLI command succeeded, return success
-    if (result.exitCode === 0 && !stdout.includes('unknown command') && !stdout.includes('Unknown command')) {
-      return c.json({
-        success: true,
-        deviceId,
-        message: 'Device removed via CLI',
-      });
-    }
-
-    // Fallback: find and edit pairing data files directly
-    // OpenClaw stores device data in JSON files under its config directory
-    const findResult = await execWithTimeout(sandbox,
-      `grep -rl "${deviceId}" /root/.openclaw/ /home/*/.openclaw/ 2>/dev/null | head -10`,
-      { timeout: 10000 },
-    );
-    const matchingFiles = (findResult.stdout || '').trim().split('\n').filter(Boolean);
-
-    if (matchingFiles.length === 0) {
-      return c.json(
-        {
-          success: false,
-          deviceId,
-          error: 'Device not found in pairing data',
-        },
-        404,
-      );
-    }
-
-    // Use Node.js to safely parse and modify JSON files
-    for (const file of matchingFiles) {
-      if (!file.endsWith('.json')) continue;
-
-      // eslint-disable-next-line no-await-in-loop
-      const editResult = await execWithTimeout(sandbox,
-        `node -e "
-const fs = require('fs');
-try {
-  const data = JSON.parse(fs.readFileSync('${file}', 'utf8'));
-  let modified = false;
-  // Check if deviceId is a top-level key (most common: paired.json structure)
-  if ('${deviceId}' in data) {
-    delete data['${deviceId}'];
-    modified = true;
-  } else {
-    for (const key of Object.keys(data)) {
-      if (Array.isArray(data[key])) {
-        const before = data[key].length;
-        data[key] = data[key].filter(d => d.deviceId !== '${deviceId}' && d.id !== '${deviceId}');
-        if (data[key].length < before) modified = true;
-      } else if (typeof data[key] === 'object' && data[key] !== null) {
-        if ('${deviceId}' in data[key]) {
-          delete data[key]['${deviceId}'];
-          modified = true;
-        }
-      }
-    }
-  }
-  if (modified) {
-    fs.writeFileSync('${file}', JSON.stringify(data, null, 2));
-    console.log('REMOVED');
-  } else {
-    console.log('NOT_FOUND');
-  }
-} catch (e) {
-  console.log('ERROR: ' + e.message);
-}
-"`,
-        { timeout: 10000 },
-      );
-
-      if ((editResult.stdout || '').includes('REMOVED')) {
-        return c.json({
-          success: true,
-          deviceId,
-          message: 'Device pairing data removed',
-        });
-      }
-    }
-
-    return c.json(
-      {
-        success: false,
-        deviceId,
-        error: 'Could not remove device from pairing data',
-      },
-      500,
-    );
+    return c.json({
+      success: true,
+      deviceId,
+      message: 'Device removed',
+    });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return c.json({ error: errorMessage }, 500);
