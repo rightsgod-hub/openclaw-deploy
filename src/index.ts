@@ -26,7 +26,7 @@ import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
 import type { AppEnv, MoltbotEnv } from './types';
 import { MOLTBOT_PORT } from './config';
 import { createAccessMiddleware } from './auth';
-import { ensureMoltbotGateway, findExistingMoltbotProcess, isGatewayPortResponding, killAllGatewayProcesses, syncToR2 } from './gateway';
+import { ensureMoltbotGateway, findExistingMoltbotProcess, syncToR2 } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
 import loadingPageHtml from './assets/loading.html';
@@ -92,12 +92,25 @@ function validateRequiredEnv(env: MoltbotEnv): string[] {
 }
 
 /**
- * Build sandbox options. keepAlive is intentionally disabled — it causes
- * 30s alarm loops that block sandbox.exec() and destabilize the DO.
- * Default: container sleeps 10 min after last activity.
+ * Build sandbox options based on environment configuration.
+ *
+ * SANDBOX_SLEEP_AFTER controls how long the container stays alive after inactivity:
+ * - 'never' (default): Container stays alive indefinitely (recommended due to long cold starts)
+ * - Duration string: e.g., '10m', '1h', '30s' - container sleeps after this period of inactivity
+ *
+ * To reduce costs at the expense of cold start latency, set SANDBOX_SLEEP_AFTER to a duration:
+ *   npx wrangler secret put SANDBOX_SLEEP_AFTER
+ *   # Enter: 10m (or 1h, 30m, etc.)
  */
 function buildSandboxOptions(env: MoltbotEnv): SandboxOptions {
-  const sleepAfter = env.SANDBOX_SLEEP_AFTER || '10m';
+  const sleepAfter = env.SANDBOX_SLEEP_AFTER?.toLowerCase() || 'never';
+
+  // 'never' means keep the container alive indefinitely
+  if (sleepAfter === 'never') {
+    return { keepAlive: true };
+  }
+
+  // Otherwise, use the specified duration
   return { sleepAfter };
 }
 
@@ -268,10 +281,13 @@ app.all('*', async (c) => {
 
   // Proxy to Moltbot with WebSocket message interception
   if (isWebSocketRequest) {
+    const debugLogs = c.env.DEBUG_ROUTES === 'true';
     const redactedSearch = redactSensitiveParams(url);
 
     console.log('[WS] Proxying WebSocket connection to Moltbot');
-    console.log('[WS] URL:', url.pathname + redactedSearch);
+    if (debugLogs) {
+      console.log('[WS] URL:', url.pathname + redactedSearch);
+    }
 
     // Inject gateway token into WebSocket request if not already present.
     // CF Access redirects strip query params, so authenticated users lose ?token=.
@@ -294,7 +310,9 @@ app.all('*', async (c) => {
       return containerResponse;
     }
 
-    console.log('[WS] Got container WebSocket, setting up interception');
+    if (debugLogs) {
+      console.log('[WS] Got container WebSocket, setting up interception');
+    }
 
     // Create a WebSocket pair for the client
     const [clientWs, serverWs] = Object.values(new WebSocketPair());
@@ -303,27 +321,34 @@ app.all('*', async (c) => {
     serverWs.accept();
     containerWs.accept();
 
-    console.log('[WS] Both WebSockets accepted');
-    console.log('[WS] containerWs.readyState:', containerWs.readyState);
-    console.log('[WS] serverWs.readyState:', serverWs.readyState);
+    if (debugLogs) {
+      console.log('[WS] Both WebSockets accepted');
+      console.log('[WS] containerWs.readyState:', containerWs.readyState);
+      console.log('[WS] serverWs.readyState:', serverWs.readyState);
+    }
 
     // Relay messages from client to container
     serverWs.addEventListener('message', (event) => {
-      console.log(
-        '[WS] Client -> Container:',
-        typeof event.data,
-        typeof event.data === 'string' ? event.data.slice(0, 200) : '(binary)',
-      );
+      if (debugLogs) {
+        console.log(
+          '[WS] Client -> Container:',
+          typeof event.data,
+          typeof event.data === 'string' ? event.data.slice(0, 200) : '(binary)',
+        );
+      }
       if (containerWs.readyState === WebSocket.OPEN) {
         containerWs.send(event.data);
       } else {
-        console.error('[WS] Container not open, cannot send message. readyState:', containerWs.readyState);
+        if (debugLogs) {
+          console.log('[WS] Container not open, readyState:', containerWs.readyState);
+        }
+        // Fork: Send CONTAINER_DISCONNECTED error back to client
         let messageId = 'unknown';
         if (typeof event.data === 'string') {
           try {
             const parsed = JSON.parse(event.data);
             if (parsed.id) messageId = parsed.id;
-          } catch (e) { /* Not JSON */ }
+          } catch { /* Not JSON */ }
         }
         if (serverWs.readyState === WebSocket.OPEN) {
           serverWs.send(JSON.stringify({
@@ -337,53 +362,69 @@ app.all('*', async (c) => {
 
     // Relay messages from container to client, with error transformation
     containerWs.addEventListener('message', (event) => {
-      console.log(
-        '[WS] Container -> Client (raw):',
-        typeof event.data,
-        typeof event.data === 'string' ? event.data.slice(0, 500) : '(binary)',
-      );
+      if (debugLogs) {
+        console.log(
+          '[WS] Container -> Client (raw):',
+          typeof event.data,
+          typeof event.data === 'string' ? event.data.slice(0, 500) : '(binary)',
+        );
+      }
       let data = event.data;
 
       // Try to intercept and transform error messages
       if (typeof data === 'string') {
         try {
           const parsed = JSON.parse(data);
-          console.log('[WS] Parsed JSON, has error.message:', !!parsed.error?.message);
+          if (debugLogs) {
+            console.log('[WS] Parsed JSON, has error.message:', !!parsed.error?.message);
+          }
           if (parsed.error?.message) {
-            console.log('[WS] Original error.message:', parsed.error.message);
+            if (debugLogs) {
+              console.log('[WS] Original error.message:', parsed.error.message);
+            }
             parsed.error.message = transformErrorMessage(parsed.error.message, url.host);
-            console.log('[WS] Transformed error.message:', parsed.error.message);
+            if (debugLogs) {
+              console.log('[WS] Transformed error.message:', parsed.error.message);
+            }
             data = JSON.stringify(parsed);
           }
         } catch (e) {
-          console.log('[WS] Not JSON or parse error:', e);
+          if (debugLogs) {
+            console.log('[WS] Not JSON or parse error:', e);
+          }
         }
       }
 
       if (serverWs.readyState === WebSocket.OPEN) {
         serverWs.send(data);
-      } else {
+      } else if (debugLogs) {
         console.log('[WS] Server not open, readyState:', serverWs.readyState);
       }
     });
 
     // Handle close events
     serverWs.addEventListener('close', (event) => {
-      console.warn('[WS] Client closed:', event.code, event.reason);
-      // 1006 is an internal code and cannot be used in close()
+      if (debugLogs) {
+        console.log('[WS] Client closed:', event.code, event.reason);
+      }
+      // Fork: 1006 is an internal code and cannot be used in close()
       const closeCode = event.code === 1006 ? 1001 : event.code;
       containerWs.close(closeCode, event.reason);
     });
 
     containerWs.addEventListener('close', (event) => {
-      console.warn('[WS] Container closed:', event.code, event.reason);
+      if (debugLogs) {
+        console.log('[WS] Container closed:', event.code, event.reason);
+      }
       // Transform the close reason (truncate to 123 bytes max for WebSocket spec)
       let reason = transformErrorMessage(event.reason, url.host);
       if (reason.length > 123) {
         reason = reason.slice(0, 120) + '...';
       }
-      console.warn('[WS] Transformed close reason:', reason);
-      // 1006 is an internal code and cannot be used in close()
+      if (debugLogs) {
+        console.log('[WS] Transformed close reason:', reason);
+      }
+      // Fork: 1006 is an internal code and cannot be used in close()
       const closeCode = event.code === 1006 ? 1001 : event.code;
       serverWs.close(closeCode, reason);
     });
@@ -399,7 +440,9 @@ app.all('*', async (c) => {
       serverWs.close(1011, 'Container error');
     });
 
-    console.log('[WS] Returning intercepted WebSocket response');
+    if (debugLogs) {
+      console.log('[WS] Returning intercepted WebSocket response');
+    }
     return new Response(null, {
       status: 101,
       webSocket: clientWs,
@@ -423,8 +466,8 @@ app.all('*', async (c) => {
 });
 
 /**
- * Scheduled handler for cron triggers.
- * Syncs moltbot config/state from container to R2 for persistence.
+ * Fork: Scheduled handler for cron triggers.
+ * Ensures gateway is running, refreshes GCP tokens, and syncs to R2.
  */
 async function scheduled(
   _event: ScheduledEvent,
@@ -436,61 +479,47 @@ async function scheduled(
     const options = buildSandboxOptions(env);
     const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
-    // Check port first: if port is responding, gateway is alive regardless of SDK process state
-    // Wrap with timeout: sandbox stub calls hang during DO resets → Worker exceededCpu without this
-    const portResponding = await Promise.race([
-      isGatewayPortResponding(sandbox),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 8000)),
-    ]);
-
+    // Check if gateway is running
+    const gatewayProcess = await findExistingMoltbotProcess(sandbox);
     let justStarted = false;
 
-    if (portResponding) {
-      console.log('[cron] Port 18789 is responding, gateway is running');
-    } else {
-      // Port not responding - try to find and verify a process, or start a new one
-      const gatewayProcess = await findExistingMoltbotProcess(sandbox);
-      if (gatewayProcess) {
+    if (gatewayProcess) {
+      try {
+        console.log('[cron] Verifying gateway responsiveness...');
+        await gatewayProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
+        console.log('[cron] Gateway is responsive, proceeding with sync');
+      } catch {
+        // Process exists but port not ready - kill and restart
+        console.log('[cron] Gateway process exists but port not ready, restarting...');
         try {
-          console.log('[cron] Verifying gateway responsiveness...');
-          await gatewayProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
-          console.log('[cron] Gateway is responsive, proceeding with sync');
-        } catch {
-          // Process exists but port not ready — could be stale after deploy/restart.
-          // Kill and restart instead of skipping forever.
-          console.log('[cron] Gateway process exists but port not ready, restarting...');
-          try {
-            await killAllGatewayProcesses(sandbox);
-            await ensureMoltbotGateway(sandbox, env);
-            console.log('[cron] Gateway restarted successfully');
-            justStarted = true;
-          } catch (restartErr) {
-            console.error('[cron] Gateway restart failed:', restartErr);
-            return;
-          }
-        }
-      } else {
-        console.log('[cron] Gateway not running, attempting to start...');
-        try {
+          await gatewayProcess.kill();
           await ensureMoltbotGateway(sandbox, env);
-          console.log('[cron] Gateway started successfully');
+          console.log('[cron] Gateway restarted successfully');
           justStarted = true;
-        } catch (startError) {
-          console.error('[cron] Failed to start gateway:', startError);
+        } catch (restartErr) {
+          console.error('[cron] Gateway restart failed:', restartErr);
           return;
         }
       }
+    } else {
+      console.log('[cron] Gateway not running, attempting to start...');
+      try {
+        await ensureMoltbotGateway(sandbox, env);
+        console.log('[cron] Gateway started successfully');
+        justStarted = true;
+      } catch (startError) {
+        console.error('[cron] Failed to start gateway:', startError);
+        return;
+      }
     }
 
-    // Skip exec-dependent operations when gateway was just started.
-    // DO alarm may still be running (180s cycle), blocking sandbox.exec() calls.
-    // GCP refresh and R2 sync will run on the next cron cycle when alarm is idle.
+    // Skip exec-dependent operations when gateway was just started
     if (justStarted) {
       console.log('[cron] Gateway just started, deferring sync/refresh to next cycle');
       return;
     }
 
-    // Refresh GCP access token if Vertex AI is configured
+    // Refresh GCP access token if configured
     if (env.GCP_SERVICE_ACCOUNT_KEY) {
       try {
         console.log('[cron] Refreshing GCP access token...');
@@ -506,10 +535,12 @@ async function scheduled(
         if (exitCode === 2) {
           console.log('[cron] config.apply failed, restarting gateway to load new token...');
           try {
-            // Clear refresh timestamp so start-openclaw.sh's refresh-gcp-token.sh
-            // won't skip due to threshold (R2 restore overwrites the fresh token)
             await sandbox.exec('rm -f /tmp/gcp-token-last-refresh', { timeout: 5000 });
-            await killAllGatewayProcesses(sandbox);
+            const existingProc = await findExistingMoltbotProcess(sandbox);
+            if (existingProc) {
+              await existingProc.kill();
+              await new Promise((r) => setTimeout(r, 2000));
+            }
             await ensureMoltbotGateway(sandbox, env);
             console.log('[cron] Gateway restarted with fresh GCP token');
           } catch (restartErr) {

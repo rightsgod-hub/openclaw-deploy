@@ -1,35 +1,17 @@
 import type { Sandbox } from '@cloudflare/sandbox';
 import type { MoltbotEnv } from '../types';
 import { getR2BucketName } from '../config';
-import { execWithTimeout } from './exec';
 
-// Module-level cache: once rclone is configured, skip on subsequent calls.
-// This flag resets naturally when the Durable Object resets (module reloads).
-let rcloneConfigured = false;
+const RCLONE_CONF_PATH = '/root/.config/rclone/rclone.conf';
+const CONFIGURED_FLAG = '/tmp/.rclone-configured';
 
 /**
- * Reset the rclone config cache (for testing only)
- */
-export function resetR2MountCache(): void {
-  rcloneConfigured = false;
-}
-
-/**
- * Configure rclone for Cloudflare R2 access.
+ * Ensure rclone is configured in the container for R2 access.
+ * Idempotent — checks for a flag file to skip re-configuration.
  *
- * Replaces the old s3fs FUSE mount approach (sandbox.mountBucket) with
- * direct rclone operations. No FUSE kernel dependency, no lazy listing,
- * no mount hangs.
- *
- * @param sandbox - The sandbox instance
- * @param env - Worker environment bindings
- * @returns true if configured successfully, false otherwise
+ * @returns true if rclone is configured, false if credentials are missing
  */
-export async function mountR2Storage(sandbox: Sandbox, env: MoltbotEnv): Promise<boolean> {
-  if (rcloneConfigured) {
-    return true;
-  }
-
+export async function ensureRcloneConfig(sandbox: Sandbox, env: MoltbotEnv): Promise<boolean> {
   if (!env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY || !env.CF_ACCOUNT_ID) {
     console.log(
       'R2 storage not configured (missing R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, or CF_ACCOUNT_ID)',
@@ -37,32 +19,26 @@ export async function mountR2Storage(sandbox: Sandbox, env: MoltbotEnv): Promise
     return false;
   }
 
-  const bucketName = getR2BucketName(env);
-  const endpoint = `https://${env.CF_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+  const check = await sandbox.exec(`test -f ${CONFIGURED_FLAG} && echo yes || echo no`);
+  if (check.stdout?.trim() === 'yes') {
+    return true;
+  }
 
-  const configContent = [
+  const rcloneConfig = [
     '[r2]',
     'type = s3',
     'provider = Cloudflare',
     `access_key_id = ${env.R2_ACCESS_KEY_ID}`,
     `secret_access_key = ${env.R2_SECRET_ACCESS_KEY}`,
-    `endpoint = ${endpoint}`,
-    'region = auto',
+    `endpoint = https://${env.CF_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    'acl = private',
     'no_check_bucket = true',
-    '',
   ].join('\n');
 
-  try {
-    // Write rclone config using shell heredoc (no node dependency, INI stays INI)
-    const mkdirCmd = `mkdir -p /root/.config/rclone`;
-    const writeCmd = `cat > /root/.config/rclone/rclone.conf << 'RCLONEEOF'\n${configContent}RCLONEEOF`;
-    await execWithTimeout(sandbox, mkdirCmd, { timeout: 5000 });
-    await execWithTimeout(sandbox, writeCmd, { timeout: 5000 });
-    rcloneConfigured = true;
-    console.log('rclone configured for R2 bucket:', bucketName, 'at', endpoint);
-    return true;
-  } catch (err) {
-    console.error('Failed to configure rclone:', err instanceof Error ? err.message : String(err));
-    return false;
-  }
+  await sandbox.exec(`mkdir -p $(dirname ${RCLONE_CONF_PATH})`);
+  await sandbox.writeFile(RCLONE_CONF_PATH, rcloneConfig);
+  await sandbox.exec(`touch ${CONFIGURED_FLAG}`);
+
+  console.log('Rclone configured for R2 bucket:', getR2BucketName(env));
+  return true;
 }

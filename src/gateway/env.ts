@@ -23,6 +23,7 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   // Direct provider keys
   if (env.ANTHROPIC_API_KEY) envVars.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
   if (env.OPENAI_API_KEY) envVars.OPENAI_API_KEY = env.OPENAI_API_KEY;
+  // Fork: Moonshot provider
   if (env.MOONSHOT_API_KEY) envVars.MOONSHOT_API_KEY = env.MOONSHOT_API_KEY;
 
   // Legacy AI Gateway support: AI_GATEWAY_BASE_URL + AI_GATEWAY_API_KEY
@@ -44,24 +45,33 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   if (env.TELEGRAM_DM_POLICY) envVars.TELEGRAM_DM_POLICY = env.TELEGRAM_DM_POLICY;
   if (env.DISCORD_BOT_TOKEN) envVars.DISCORD_BOT_TOKEN = env.DISCORD_BOT_TOKEN;
   if (env.DISCORD_DM_POLICY) envVars.DISCORD_DM_POLICY = env.DISCORD_DM_POLICY;
+  // Fork: Discord DM allow list
   if (env.DISCORD_DM_ALLOW_FROM) envVars.DISCORD_DM_ALLOW_FROM = env.DISCORD_DM_ALLOW_FROM;
   if (env.SLACK_BOT_TOKEN) envVars.SLACK_BOT_TOKEN = env.SLACK_BOT_TOKEN;
   if (env.SLACK_APP_TOKEN) envVars.SLACK_APP_TOKEN = env.SLACK_APP_TOKEN;
   if (env.CF_AI_GATEWAY_MODEL) envVars.CF_AI_GATEWAY_MODEL = env.CF_AI_GATEWAY_MODEL;
   if (env.CF_ACCOUNT_ID) envVars.CF_ACCOUNT_ID = env.CF_ACCOUNT_ID;
+  if (env.CDP_SECRET) envVars.CDP_SECRET = env.CDP_SECRET;
+  if (env.WORKER_URL) envVars.WORKER_URL = env.WORKER_URL;
+
+  // R2 persistence credentials (used by rclone in start-openclaw.sh)
   if (env.R2_ACCESS_KEY_ID) envVars.R2_ACCESS_KEY_ID = env.R2_ACCESS_KEY_ID;
   if (env.R2_SECRET_ACCESS_KEY) envVars.R2_SECRET_ACCESS_KEY = env.R2_SECRET_ACCESS_KEY;
   if (env.R2_BUCKET_NAME) envVars.R2_BUCKET_NAME = env.R2_BUCKET_NAME;
+
+  // Fork: GCP / Vertex AI credentials
   if (env.USE_VERTEX_AI) envVars.USE_VERTEX_AI = env.USE_VERTEX_AI;
   if (env.GCP_PROJECT_ID) envVars.GCP_PROJECT_ID = env.GCP_PROJECT_ID;
   if (env.GCP_SERVICE_ACCOUNT_KEY) envVars.GCP_SERVICE_ACCOUNT_KEY = env.GCP_SERVICE_ACCOUNT_KEY;
+  // Fork: GA4 service account
   if (env.GA4_SERVICE_ACCOUNT_ID) envVars.GA4_SERVICE_ACCOUNT_ID = env.GA4_SERVICE_ACCOUNT_ID;
   if (env.GA4_SERVICE_ACCOUNT_KEY) envVars.GA4_SERVICE_ACCOUNT_KEY = env.GA4_SERVICE_ACCOUNT_KEY;
-  if (env.CDP_SECRET) envVars.CDP_SECRET = env.CDP_SECRET;
-  if (env.WORKER_URL) envVars.WORKER_URL = env.WORKER_URL;
+  // Fork: Google Workspace OAuth
   if (env.GWS_CLIENT_ID) envVars.GWS_CLIENT_ID = env.GWS_CLIENT_ID;
   if (env.GWS_CLIENT_SECRET) envVars.GWS_CLIENT_SECRET = env.GWS_CLIENT_SECRET;
   if (env.GWS_REFRESH_TOKEN) envVars.GWS_REFRESH_TOKEN = env.GWS_REFRESH_TOKEN;
+  // Fork: CF AI Gateway multiple models
+  if (env.CF_AI_GATEWAY_MODELS) envVars.CF_AI_GATEWAY_MODELS = env.CF_AI_GATEWAY_MODELS;
 
   return envVars;
 }

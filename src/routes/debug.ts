@@ -1,17 +1,6 @@
 import { Hono } from 'hono';
-import { getSandbox, type SandboxOptions } from '@cloudflare/sandbox';
-import type { AppEnv, MoltbotEnv } from '../types';
-import { execWithTimeout, findExistingMoltbotProcess, ensureMoltbotGateway } from '../gateway';
-
-/**
- * Build sandbox options. keepAlive is intentionally disabled — it causes
- * 30s alarm loops that block sandbox.exec() and destabilize the DO.
- * Duplicated from index.ts to avoid circular dependencies.
- */
-function buildSandboxOptions(env: MoltbotEnv): SandboxOptions {
-  const sleepAfter = env.SANDBOX_SLEEP_AFTER || '10m';
-  return { sleepAfter };
-}
+import type { AppEnv } from '../types';
+import { findExistingMoltbotProcess, waitForProcess } from '../gateway';
 
 /**
  * Debug routes for inspecting container state
@@ -25,12 +14,16 @@ debug.get('/version', async (c) => {
   const sandbox = c.get('sandbox');
   try {
     // Get OpenClaw version
-    const versionResult = await execWithTimeout(sandbox,'openclaw --version', { timeout: 5000 });
-    const moltbotVersion = (versionResult.stdout || versionResult.stderr || '').trim();
+    const versionProcess = await sandbox.startProcess('openclaw --version');
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const versionLogs = await versionProcess.getLogs();
+    const moltbotVersion = (versionLogs.stdout || versionLogs.stderr || '').trim();
 
     // Get node version
-    const nodeResult = await execWithTimeout(sandbox,'node --version', { timeout: 5000 });
-    const nodeVersion = (nodeResult.stdout || '').trim();
+    const nodeProcess = await sandbox.startProcess('node --version');
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const nodeLogs = await nodeProcess.getLogs();
+    const nodeVersion = (nodeLogs.stdout || '').trim();
 
     return c.json({
       moltbot_version: moltbotVersion,
@@ -138,13 +131,17 @@ debug.get('/cli', async (c) => {
   const cmd = c.req.query('cmd') || 'openclaw --help';
 
   try {
-    const result = await execWithTimeout(sandbox,cmd, { timeout: 15000 });
+    const proc = await sandbox.startProcess(cmd);
+    await waitForProcess(proc, 120000);
+
+    const logs = await proc.getLogs();
+    const status = proc.getStatus ? await proc.getStatus() : proc.status;
     return c.json({
       command: cmd,
-      status: result.exitCode === 0 ? 'completed' : 'failed',
-      exitCode: result.exitCode,
-      stdout: result.stdout || '',
-      stderr: result.stderr || '',
+      status,
+      exitCode: proc.exitCode,
+      stdout: logs.stdout || '',
+      stderr: logs.stderr || '',
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -362,9 +359,12 @@ debug.get('/container-config', async (c) => {
   const sandbox = c.get('sandbox');
 
   try {
-    const result = await execWithTimeout(sandbox,'cat /root/.openclaw/openclaw.json', { timeout: 5000 });
-    const stdout = result.stdout || '';
-    const stderr = result.stderr || '';
+    const proc = await sandbox.startProcess('cat /root/.openclaw/openclaw.json');
+    await waitForProcess(proc, 5000);
+
+    const logs = await proc.getLogs();
+    const stdout = logs.stdout || '';
+    const stderr = logs.stderr || '';
 
     let config = null;
     try {
@@ -374,8 +374,8 @@ debug.get('/container-config', async (c) => {
     }
 
     return c.json({
-      status: result.exitCode === 0 ? 'completed' : 'failed',
-      exitCode: result.exitCode,
+      status: proc.status,
+      exitCode: proc.exitCode,
       config,
       raw: config ? undefined : stdout,
       stderr,
@@ -383,60 +383,6 @@ debug.get('/container-config', async (c) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return c.json({ error: errorMessage }, 500);
-  }
-});
-
-// GET /debug/test-cron - Manually trigger the cron logic for testing
-debug.get('/test-cron', async (c) => {
-  try {
-    const env = c.env;
-    console.log('[debug/test-cron] Starting manual cron test');
-
-    const options = buildSandboxOptions(env);
-    const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
-
-    const gatewayProcess = await findExistingMoltbotProcess(sandbox);
-    if (!gatewayProcess) {
-      console.log('[debug/test-cron] Gateway not running, attempting to start...');
-      try {
-        await ensureMoltbotGateway(sandbox, env);
-        console.log('[debug/test-cron] Gateway started successfully');
-        return c.json({
-          status: 'ok',
-          message: 'Gateway started successfully. Refresh dashboard to connect.',
-        });
-      } catch (startError) {
-        const errorMessage = startError instanceof Error ? startError.message : 'Unknown error';
-        const errorStack = startError instanceof Error ? startError.stack : undefined;
-        console.error('[debug/test-cron] Failed to start gateway:', startError);
-        return c.json(
-          {
-            status: 'error',
-            error: errorMessage,
-            details: errorStack,
-          },
-          500,
-        );
-      }
-    }
-
-    return c.json({
-      status: 'ok',
-      message: 'Gateway already running',
-      processId: gatewayProcess.id,
-      processStatus: gatewayProcess.status,
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    const errorStack = error instanceof Error ? error.stack : undefined;
-    return c.json(
-      {
-        status: 'error',
-        error: errorMessage,
-        stack: errorStack,
-      },
-      500,
-    );
   }
 });
 

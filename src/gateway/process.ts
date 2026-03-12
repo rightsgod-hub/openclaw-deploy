@@ -2,11 +2,7 @@ import type { Sandbox, Process } from '@cloudflare/sandbox';
 import type { MoltbotEnv } from '../types';
 import { MOLTBOT_PORT, STARTUP_TIMEOUT_MS } from '../config';
 import { buildEnvVars } from './env';
-import { mountR2Storage } from './r2';
-
-// Module-level guard: prevents multiple concurrent gateway spawns.
-// If one request is already starting the gateway, others wait for it.
-let gatewayStartPromise: Promise<Process | null> | null = null;
+import { ensureRcloneConfig } from './r2';
 
 /**
  * Find an existing OpenClaw gateway process
@@ -17,15 +13,12 @@ let gatewayStartPromise: Promise<Process | null> | null = null;
 export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Process | null> {
   try {
     const processes = await sandbox.listProcesses();
-    console.log(`[findProcess] Checking ${processes.length} processes`);
-    let deadCount = 0;
     for (const proc of processes) {
       // Match gateway process (openclaw gateway or legacy clawdbot gateway)
       // Don't match CLI commands like "openclaw devices list"
       const isGatewayProcess =
         proc.command.includes('start-openclaw.sh') ||
         proc.command.includes('openclaw gateway') ||
-        proc.command.includes('openclaw-gateway') || // Hyphenated version
         // Legacy: match old startup script during transition
         proc.command.includes('start-moltbot.sh') ||
         proc.command.includes('clawdbot gateway');
@@ -38,18 +31,10 @@ export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Proc
 
       if (isGatewayProcess && !isCliCommand) {
         if (proc.status === 'starting' || proc.status === 'running') {
-          console.log(
-            `[findProcess] Found active gateway: ${proc.command.substring(0, 80)} status=${proc.status}`,
-          );
           return proc;
         }
-        deadCount++;
       }
     }
-    if (deadCount > 0) {
-      console.log(`[findProcess] Skipped ${deadCount} dead gateway process(es)`);
-    }
-    console.log('[findProcess] No gateway process found');
   } catch (e) {
     console.log('Could not list processes:', e);
   }
@@ -68,63 +53,13 @@ export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Proc
  * @param env - Worker environment bindings
  * @returns The running gateway process
  */
-/**
- * Check if gateway port is responding via containerFetch (no exec).
- * Returns true if port 18789 is listening and accepting connections.
- */
-export async function isGatewayPortResponding(sandbox: Sandbox): Promise<boolean> {
-  try {
-    await sandbox.containerFetch(
-      new Request('http://localhost:18789/', {
-        signal: AbortSignal.timeout(3000),
-      }),
-      MOLTBOT_PORT,
-    );
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Kill all SDK-tracked gateway processes. */
-export async function killAllGatewayProcesses(sandbox: Sandbox): Promise<void> {
-  // 1. Kill all SDK-tracked processes
-  try {
-    const processes = await sandbox.listProcesses();
-    for (const proc of processes) {
-      if (proc.status === 'running' || proc.status === 'starting') {
-        try { await proc.kill(); } catch { /* already dead */ }
-      }
-    }
-  } catch { /* ignore */ }
-  await new Promise((r) => setTimeout(r, 2000));
-}
-
-export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): Promise<Process | null> {
-  // R2 mounting is handled by start-openclaw.sh internally (env vars → rclone config → R2 restore).
-  // Worker-side mountR2Storage exec was removed to eliminate exec dependency during DO alarm.
-
-  // Port check first: if port is responding, the gateway is alive.
-  // Trust the port over the SDK process list, which can lose track of
-  // processes after exec or other process replacement scenarios.
-  const portResponding = await isGatewayPortResponding(sandbox);
+export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): Promise<Process> {
+  // Configure rclone for R2 persistence (non-blocking if not configured).
+  // The startup script uses rclone to restore data from R2 on boot.
+  await ensureRcloneConfig(sandbox, env);
 
   // Check if gateway is already running or starting
   const existingProcess = await findExistingMoltbotProcess(sandbox);
-
-  if (portResponding) {
-    console.log('[Gateway] Port 18789 is responding, gateway is running');
-    if (existingProcess) {
-      return existingProcess;
-    }
-    // Port responding but no SDK process found. This happens when the
-    // exec-based start-openclaw.sh replaced the shell process.
-    // The gateway is healthy - no action needed. All callers ignore the
-    // return value, so returning null is safe.
-    console.log('[Gateway] No SDK process found but gateway is alive, returning null');
-    return null;
-  }
-
   if (existingProcess) {
     console.log(
       'Found existing gateway process:',
@@ -153,72 +88,51 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
     }
   }
 
-  // Guard against concurrent spawns: if another request is already starting
-  // the gateway, wait for that attempt instead of spawning a duplicate.
-  if (gatewayStartPromise) {
-    console.log('Gateway startup already in progress, waiting for it...');
-    return gatewayStartPromise;
+  // Start a new OpenClaw gateway
+  console.log('Starting new OpenClaw gateway...');
+  const envVars = buildEnvVars(env);
+  const command = '/usr/local/bin/start-openclaw.sh';
+
+  console.log('Starting process with command:', command);
+  console.log('Environment vars being passed:', Object.keys(envVars));
+
+  let process: Process;
+  try {
+    process = await sandbox.startProcess(command, {
+      env: Object.keys(envVars).length > 0 ? envVars : undefined,
+    });
+    console.log('Process started with id:', process.id, 'status:', process.status);
+  } catch (startErr) {
+    console.error('Failed to start process:', startErr);
+    throw startErr;
   }
 
-  // Start a new OpenClaw gateway (only one at a time)
-  gatewayStartPromise = (async () => {
+  // Wait for the gateway to be ready
+  try {
+    console.log('[Gateway] Waiting for OpenClaw gateway to be ready on port', MOLTBOT_PORT);
+    await process.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: STARTUP_TIMEOUT_MS });
+    console.log('[Gateway] OpenClaw gateway is ready!');
+
+    const logs = await process.getLogs();
+    if (logs.stdout) console.log('[Gateway] stdout:', logs.stdout);
+    if (logs.stderr) console.log('[Gateway] stderr:', logs.stderr);
+  } catch (e) {
+    console.error('[Gateway] waitForPort failed:', e);
     try {
-      console.log('Starting new OpenClaw gateway...');
-      const envVars = buildEnvVars(env);
-      const command = '/usr/local/bin/start-openclaw.sh';
-
-      // Kill ALL orphaned processes and clean lock files before starting.
-      // If we reach here, portResponding was false so port is definitely free.
-      console.log('[Gateway] Port 18789 free, killing all orphaned processes...');
-      await killAllGatewayProcesses(sandbox);
-      console.log('[Gateway] Cleanup complete');
-
-      console.log('Starting process with command:', command);
-      console.log('Environment vars being passed:', Object.keys(envVars));
-
-      let process: Process;
-      try {
-        process = await sandbox.startProcess(command, {
-          env: Object.keys(envVars).length > 0 ? envVars : undefined,
-        });
-        console.log('Process started with id:', process.id, 'status:', process.status);
-      } catch (startErr) {
-        console.error('Failed to start process:', startErr);
-        throw startErr;
-      }
-
-      // Wait for the gateway to be ready
-      try {
-        console.log('[Gateway] Waiting for OpenClaw gateway to be ready on port', MOLTBOT_PORT);
-        await process.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: STARTUP_TIMEOUT_MS });
-        console.log('[Gateway] OpenClaw gateway is ready!');
-
-        const logs = await process.getLogs();
-        if (logs.stdout) console.log('[Gateway] stdout:', logs.stdout);
-        if (logs.stderr) console.log('[Gateway] stderr:', logs.stderr);
-      } catch (e) {
-        console.error('[Gateway] waitForPort failed:', e);
-        try {
-          const logs = await process.getLogs();
-          console.error('[Gateway] startup failed. Stderr:', logs.stderr);
-          console.error('[Gateway] startup failed. Stdout:', logs.stdout);
-          throw new Error(`OpenClaw gateway failed to start. Stderr: ${logs.stderr || '(empty)'}`, {
-            cause: e,
-          });
-        } catch (logErr) {
-          console.error('[Gateway] Failed to get logs:', logErr);
-          throw e;
-        }
-      }
-
-      // Verify gateway is actually responding
-      console.log('[Gateway] Verifying gateway health...');
-
-      return process;
-    } finally {
-      gatewayStartPromise = null;
+      const logs = await process.getLogs();
+      console.error('[Gateway] startup failed. Stderr:', logs.stderr);
+      console.error('[Gateway] startup failed. Stdout:', logs.stdout);
+      throw new Error(`OpenClaw gateway failed to start. Stderr: ${logs.stderr || '(empty)'}`, {
+        cause: e,
+      });
+    } catch (logErr) {
+      console.error('[Gateway] Failed to get logs:', logErr);
+      throw e;
     }
-  })();
+  }
 
-  return gatewayStartPromise;
+  // Verify gateway is actually responding
+  console.log('[Gateway] Verifying gateway health...');
+
+  return process;
 }

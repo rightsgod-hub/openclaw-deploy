@@ -2,14 +2,14 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { createAccessMiddleware } from '../auth';
 import {
-  callRpc,
   ensureMoltbotGateway,
-  execWithTimeout,
-  killAllGatewayProcesses,
-  mountR2Storage,
+  findExistingMoltbotProcess,
   syncToR2,
+  waitForProcess,
 } from '../gateway';
-import { getR2BucketName } from '../config';
+
+// CLI commands can take 10-15 seconds to complete due to WebSocket connection overhead
+const CLI_TIMEOUT_MS = 20000;
 
 /**
  * API routes
@@ -24,7 +24,6 @@ const api = new Hono<AppEnv>();
  */
 const adminApi = new Hono<AppEnv>();
 
-
 // Middleware: Verify Cloudflare Access JWT for all admin routes
 adminApi.use('*', createAccessMiddleware({ type: 'json' }));
 
@@ -36,9 +35,44 @@ adminApi.get('/devices', async (c) => {
     // Ensure moltbot is running first
     await ensureMoltbotGateway(sandbox, c.env);
 
-    const token = c.env.MOLTBOT_GATEWAY_TOKEN || '';
-    const data = await callRpc(sandbox, token, 'device.pair.list');
-    return c.json(data as Record<string, unknown>);
+    // Run OpenClaw CLI to list devices
+    // Must specify --url and --token (OpenClaw v2026.2.3 requires explicit credentials with --url)
+    const token = c.env.MOLTBOT_GATEWAY_TOKEN;
+    const tokenArg = token ? ` --token ${token}` : '';
+    const proc = await sandbox.startProcess(
+      `openclaw devices list --json --url ws://localhost:18789${tokenArg}`,
+    );
+    await waitForProcess(proc, CLI_TIMEOUT_MS);
+
+    const logs = await proc.getLogs();
+    const stdout = logs.stdout || '';
+    const stderr = logs.stderr || '';
+
+    // Try to parse JSON output
+    try {
+      // Find JSON in output (may have other log lines)
+      const jsonMatch = stdout.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const data = JSON.parse(jsonMatch[0]);
+        return c.json(data);
+      }
+
+      // If no JSON found, return raw output for debugging
+      return c.json({
+        pending: [],
+        paired: [],
+        raw: stdout,
+        stderr,
+      });
+    } catch {
+      return c.json({
+        pending: [],
+        paired: [],
+        raw: stdout,
+        stderr,
+        parseError: 'Failed to parse CLI output',
+      });
+    }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return c.json({ error: errorMessage }, 500);
@@ -58,13 +92,27 @@ adminApi.post('/devices/:requestId/approve', async (c) => {
     // Ensure moltbot is running first
     await ensureMoltbotGateway(sandbox, c.env);
 
-    const token = c.env.MOLTBOT_GATEWAY_TOKEN || '';
-    await callRpc(sandbox, token, 'device.pair.approve', { requestId });
+    // Run OpenClaw CLI to approve the device
+    const token = c.env.MOLTBOT_GATEWAY_TOKEN;
+    const tokenArg = token ? ` --token ${token}` : '';
+    const proc = await sandbox.startProcess(
+      `openclaw devices approve ${requestId} --url ws://localhost:18789${tokenArg}`,
+    );
+    await waitForProcess(proc, CLI_TIMEOUT_MS);
+
+    const logs = await proc.getLogs();
+    const stdout = logs.stdout || '';
+    const stderr = logs.stderr || '';
+
+    // Check for success indicators (case-insensitive, CLI outputs "Approved ...")
+    const success = stdout.toLowerCase().includes('approved') || proc.exitCode === 0;
 
     return c.json({
-      success: true,
+      success,
       requestId,
-      message: 'Device approved',
+      message: success ? 'Device approved' : 'Approval may have failed',
+      stdout,
+      stderr,
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -80,11 +128,28 @@ adminApi.post('/devices/approve-all', async (c) => {
     // Ensure moltbot is running first
     await ensureMoltbotGateway(sandbox, c.env);
 
-    const token = c.env.MOLTBOT_GATEWAY_TOKEN || '';
+    // First, get the list of pending devices
+    const token = c.env.MOLTBOT_GATEWAY_TOKEN;
+    const tokenArg = token ? ` --token ${token}` : '';
+    const listProc = await sandbox.startProcess(
+      `openclaw devices list --json --url ws://localhost:18789${tokenArg}`,
+    );
+    await waitForProcess(listProc, CLI_TIMEOUT_MS);
 
-    // Get list of pending devices via RPC
-    const listData = await callRpc(sandbox, token, 'device.pair.list') as { pending?: Array<{ requestId: string }> };
-    const pending = listData?.pending || [];
+    const listLogs = await listProc.getLogs();
+    const stdout = listLogs.stdout || '';
+
+    // Parse pending devices
+    let pending: Array<{ requestId: string }> = [];
+    try {
+      const jsonMatch = stdout.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const data = JSON.parse(jsonMatch[0]);
+        pending = data.pending || [];
+      }
+    } catch {
+      return c.json({ error: 'Failed to parse device list', raw: stdout }, 500);
+    }
 
     if (pending.length === 0) {
       return c.json({ approved: [], message: 'No pending devices to approve' });
@@ -96,8 +161,18 @@ adminApi.post('/devices/approve-all', async (c) => {
     for (const device of pending) {
       try {
         // eslint-disable-next-line no-await-in-loop -- sequential device approval required
-        await callRpc(sandbox, token, 'device.pair.approve', { requestId: device.requestId });
-        results.push({ requestId: device.requestId, success: true });
+        const approveProc = await sandbox.startProcess(
+          `openclaw devices approve ${device.requestId} --url ws://localhost:18789${tokenArg}`,
+        );
+        // eslint-disable-next-line no-await-in-loop
+        await waitForProcess(approveProc, CLI_TIMEOUT_MS);
+
+        // eslint-disable-next-line no-await-in-loop
+        const approveLogs = await approveProc.getLogs();
+        const success =
+          approveLogs.stdout?.toLowerCase().includes('approved') || approveProc.exitCode === 0;
+
+        results.push({ requestId: device.requestId, success });
       } catch (err) {
         results.push({
           requestId: device.requestId,
@@ -128,7 +203,6 @@ adminApi.get('/storage', async (c) => {
     c.env.CF_ACCOUNT_ID
   );
 
-  // Check which credentials are missing
   const missing: string[] = [];
   if (!c.env.R2_ACCESS_KEY_ID) missing.push('R2_ACCESS_KEY_ID');
   if (!c.env.R2_SECRET_ACCESS_KEY) missing.push('R2_SECRET_ACCESS_KEY');
@@ -136,18 +210,9 @@ adminApi.get('/storage', async (c) => {
 
   let lastSync: string | null = null;
 
-  // If R2 is configured, check for last sync timestamp
   if (hasCredentials) {
     try {
-      // Mount R2 if not already mounted
-      await mountR2Storage(sandbox, c.env);
-
-      // Check for sync marker file via rclone
-      const bucket = getR2BucketName(c.env);
-      const result = await execWithTimeout(sandbox,
-        `rclone cat r2:${bucket}/.last-sync 2>/dev/null || echo ""`,
-        { timeout: 5000 },
-      );
+      const result = await sandbox.exec('cat /tmp/.last-sync 2>/dev/null || echo ""');
       const timestamp = result.stdout?.trim();
       if (timestamp && timestamp !== '') {
         lastSync = timestamp;
@@ -192,15 +257,26 @@ adminApi.post('/storage/sync', async (c) => {
   }
 });
 
-// POST /api/admin/gateway/restart - Kill ALL processes and start a new gateway
+// POST /api/admin/gateway/restart - Kill the current gateway and start a new one
 adminApi.post('/gateway/restart', async (c) => {
   const sandbox = c.get('sandbox');
 
   try {
-    console.log('Restart Gateway: killing all processes and cleaning up...');
-    await killAllGatewayProcesses(sandbox);
+    // Find and kill the existing gateway process
+    const existingProcess = await findExistingMoltbotProcess(sandbox);
 
-    console.log('Restart Gateway: starting new gateway...');
+    if (existingProcess) {
+      console.log('Killing existing gateway process:', existingProcess.id);
+      try {
+        await existingProcess.kill();
+      } catch (killErr) {
+        console.error('Error killing process:', killErr);
+      }
+      // Wait a moment for the process to die
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+
+    // Start a new gateway in the background
     const bootPromise = ensureMoltbotGateway(sandbox, c.env).catch((err) => {
       console.error('Gateway restart failed:', err);
     });
@@ -208,7 +284,10 @@ adminApi.post('/gateway/restart', async (c) => {
 
     return c.json({
       success: true,
-      message: '全プロセス停止完了。ゲートウェイを再起動中です。',
+      message: existingProcess
+        ? 'Gateway process killed, new instance starting...'
+        : 'No existing process found, starting new instance...',
+      previousProcessId: existingProcess?.id,
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -216,17 +295,15 @@ adminApi.post('/gateway/restart', async (c) => {
   }
 });
 
-// Stage 2: Destroy the entire container (with optional skipSync for sync failure scenarios)
+// Fork: POST /api/admin/gateway/destroy - Destroy the entire container
 adminApi.post('/gateway/destroy', async (c) => {
   const sandbox = c.get('sandbox');
   const skipSync = c.req.query('skipSync') === 'true';
 
   try {
     if (skipSync) {
-      // User explicitly chose to skip sync (e.g., sync is failing)
       console.log('Container destroy: skipSync=true, skipping R2 sync...');
     } else {
-      // Attempt R2 sync before destruction
       console.log('Container destroy: syncing data to R2 before destroy...');
       try {
         const syncResult = await syncToR2(sandbox, c.env);
@@ -271,39 +348,7 @@ adminApi.post('/gateway/destroy', async (c) => {
   }
 });
 
-// DELETE /api/admin/devices/:deviceId - Remove a paired device
-adminApi.delete('/devices/:deviceId', async (c) => {
-  const sandbox = c.get('sandbox');
-  const deviceId = c.req.param('deviceId');
-
-  if (!deviceId) {
-    return c.json({ error: 'deviceId is required' }, 400);
-  }
-
-  // Validate deviceId format (alphanumeric, hyphens, underscores only)
-  if (!/^[\w-]+$/.test(deviceId)) {
-    return c.json({ error: 'Invalid deviceId format' }, 400);
-  }
-
-  try {
-    // Ensure moltbot is running first
-    await ensureMoltbotGateway(sandbox, c.env);
-
-    const token = c.env.MOLTBOT_GATEWAY_TOKEN || '';
-    await callRpc(sandbox, token, 'device.pair.remove', { deviceId });
-
-    return c.json({
-      success: true,
-      deviceId,
-      message: 'Device removed',
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    return c.json({ error: errorMessage }, 500);
-  }
-});
-
-// POST /api/admin/token-refresh - Refresh GCP token + restart gateway to apply
+// Fork: POST /api/admin/token-refresh - Refresh GCP token + restart gateway to apply
 adminApi.post('/token-refresh', async (c) => {
   const sandbox = c.get('sandbox');
 
@@ -315,22 +360,24 @@ adminApi.post('/token-refresh', async (c) => {
     console.log('Token refresh triggered from Admin UI');
     const gatewayToken = c.env.MOLTBOT_GATEWAY_TOKEN || '';
     const refreshCmd = `OPENCLAW_GATEWAY_TOKEN="${gatewayToken}" bash /usr/local/bin/refresh-gcp-token.sh`;
-    const refreshResult = await execWithTimeout(sandbox,refreshCmd, { timeout: 20000 });
+    const refreshResult = await sandbox.exec(refreshCmd, { timeout: 20000 });
     const output = refreshResult.stdout?.trim() || '';
     const exitCode = refreshResult.exitCode ?? 0;
     console.log('Token refresh result (exit=' + exitCode + '):', output);
 
     if (exitCode === 1) {
-      return c.json({ success: false, error: 'トークン取得に失敗: ' + output }, 500);
+      return c.json({ success: false, error: 'Token refresh failed: ' + output }, 500);
     }
 
     // exit 2 = config.apply failed, need gateway restart
     if (exitCode === 2) {
-      console.log('config.apply failed, killing all + restarting gateway...');
-      // Clear refresh timestamp so start-openclaw.sh's refresh won't skip
-      // (R2 restore overwrites the fresh token in config file)
-      await execWithTimeout(sandbox,'rm -f /tmp/gcp-token-last-refresh', { timeout: 5000 }).catch(() => {});
-      await killAllGatewayProcesses(sandbox);
+      console.log('config.apply failed, restarting gateway...');
+      await sandbox.exec('rm -f /tmp/gcp-token-last-refresh', { timeout: 5000 }).catch(() => {});
+      const existingProc = await findExistingMoltbotProcess(sandbox);
+      if (existingProc) {
+        try { await existingProc.kill(); } catch { /* ignore */ }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
       const bootPromise = ensureMoltbotGateway(sandbox, c.env).catch((err) => {
         console.error('Gateway restart after token refresh failed:', err);
       });
@@ -338,14 +385,14 @@ adminApi.post('/token-refresh', async (c) => {
 
       return c.json({
         success: true,
-        message: 'トークン更新完了。ゲートウェイを再起動中です（30〜60秒で復旧）。',
+        message: 'Token refreshed. Gateway restarting (30-60s to recover).',
         gatewayRestarted: true,
       });
     }
 
     return c.json({
       success: true,
-      message: 'トークン更新・反映完了。',
+      message: 'Token refreshed and applied.',
       gatewayRestarted: false,
     });
   } catch (error) {
@@ -354,7 +401,7 @@ adminApi.post('/token-refresh', async (c) => {
   }
 });
 
-// DELETE /api/admin/processes/all - Kill all running processes (emergency cleanup)
+// Fork: DELETE /api/admin/processes/all - Kill all running processes (emergency cleanup)
 adminApi.delete('/processes/all', async (c) => {
   const sandbox = c.get('sandbox');
   try {
@@ -379,7 +426,7 @@ adminApi.delete('/processes/all', async (c) => {
   }
 });
 
-// GET /api/admin/token-status - Get GCP token status
+// Fork: GET /api/admin/token-status - Get GCP token status
 adminApi.get('/token-status', async (c) => {
   const sandbox = c.get('sandbox');
   const hasGcp = !!c.env.GCP_SERVICE_ACCOUNT_KEY;
@@ -389,14 +436,13 @@ adminApi.get('/token-status', async (c) => {
   }
 
   try {
-    const result = await execWithTimeout(sandbox,
+    const result = await sandbox.exec(
       'cat /tmp/gcp-token-last-refresh 2>/dev/null || echo "0"',
       { timeout: 5000 },
     );
     const lastRefreshEpoch = parseInt(result.stdout?.trim() || '0', 10);
     const nowEpoch = Math.floor(Date.now() / 1000);
     const elapsed = nowEpoch - lastRefreshEpoch;
-    // GCP tokens are valid for 3600 seconds (1 hour)
     const tokenLifetime = 3600;
     const remaining = Math.max(0, tokenLifetime - elapsed);
 
@@ -414,7 +460,7 @@ adminApi.get('/token-status', async (c) => {
   }
 });
 
-// GET /api/admin/processes - List all processes (for debugging)
+// Fork: GET /api/admin/processes - List all processes (for debugging)
 adminApi.get('/processes', async (c) => {
   const sandbox = c.get('sandbox');
   try {

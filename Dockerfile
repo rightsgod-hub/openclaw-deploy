@@ -17,10 +17,10 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && node --version \
     && npm --version
 
-# Install BigQuery/GCS Python SDK
+# Fork: Install BigQuery/GCS Python SDK
 RUN pip3 install google-cloud-bigquery google-cloud-storage
 
-# Install rclone for R2 direct access (replaces s3fs FUSE mount)
+# Fork: Install rclone via binary download (upstream uses apt-get)
 RUN ARCH="$(dpkg --print-architecture)" \
     && curl -fsSL "https://downloads.rclone.org/rclone-current-linux-${ARCH}.zip" -o /tmp/rclone.zip \
     && unzip /tmp/rclone.zip -d /tmp/rclone-dist \
@@ -44,11 +44,11 @@ RUN mkdir -p /root/.openclaw \
     && mkdir -p /root/clawd/skills
 
 # Copy startup script
-# Build cache bust: 2026-03-10-v32-rclone-migration
+# Build cache bust: 2026-03-12-v33-upstream-rebase
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
-# Copy GCP token refresh script (called by Workers cron trigger)
+# Fork: Copy GCP token refresh script (called by Workers cron trigger)
 COPY refresh-gcp-token.sh /usr/local/bin/refresh-gcp-token.sh
 RUN chmod +x /usr/local/bin/refresh-gcp-token.sh
 
