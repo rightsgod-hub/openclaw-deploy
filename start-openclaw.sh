@@ -10,14 +10,10 @@
 # set -e removed: single command failure must not kill the entire script
 # Each section handles its own errors with || true or fallback logic
 
-# Fork: flock + ss for duplicate prevention (more reliable than pgrep)
-exec 9>/tmp/openclaw-start.lock
-flock -n 9 || { echo "Another start-openclaw.sh is already running, exiting."; exit 0; }
-
-if ss -tlnp 2>/dev/null | grep -q ":18789"; then
-    echo "OpenClaw gateway is already running on port 18789, exiting."
-    exit 0
-fi
+# [修正 2026-03-12] flock/ss による二重起動チェックを削除
+# CF Sandbox 内でロックファイルやポート残骸が残っていると
+# 新プロセスが即 exit 0 → ProcessExitedBeforeReadyError になるため除去。
+# コンテナの二重起動防止は Worker 側の keepAlive 管理に委ねる。
 
 CONFIG_DIR="/root/.openclaw"
 CONFIG_FILE="$CONFIG_DIR/openclaw.json"
@@ -547,8 +543,6 @@ echo "Dev mode: ${OPENCLAW_DEV_MODE:-false}"
 
 rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
 rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
-# Fork: Release flock before exec
-exec 9>&-
 
 if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
     echo "Starting gateway with token auth..."
