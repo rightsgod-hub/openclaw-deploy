@@ -3,7 +3,7 @@ FROM docker.io/cloudflare/sandbox:0.7.0
 # Install Node.js 22 (required by OpenClaw) and rclone (for R2 direct sync)
 # The base image has Node 20, we need to replace it with Node 22
 # Using direct binary download for reliability
-ENV NODE_VERSION=22.22.1
+ENV NODE_VERSION=22.16.0
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "${ARCH}" in \
          amd64) NODE_ARCH="x64" ;; \
