@@ -467,7 +467,8 @@ app.all('*', async (c) => {
 
 /**
  * Fork: Scheduled handler for cron triggers.
- * Ensures gateway is running, refreshes GCP tokens, and syncs to R2.
+ * Syncs data to R2 and refreshes GCP tokens - but NEVER starts/restarts gateway.
+ * Gateway lifecycle is managed exclusively by HTTP request handlers (catch-all proxy).
  */
 async function scheduled(
   _event: ScheduledEvent,
@@ -479,43 +480,31 @@ async function scheduled(
     const options = buildSandboxOptions(env);
     const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
-    // Check if gateway is running
-    const gatewayProcess = await findExistingMoltbotProcess(sandbox);
-    let justStarted = false;
+    // #7 Canary guard: probe sandbox health before doing any work
+    try {
+      const probeResult = await Promise.race([
+        findExistingMoltbotProcess(sandbox),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Canary timeout: sandbox unresponsive')), 3000),
+        ),
+      ]);
 
-    if (gatewayProcess) {
-      try {
-        console.log('[cron] Verifying gateway responsiveness...');
-        await gatewayProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
-        console.log('[cron] Gateway is responsive, proceeding with sync');
-      } catch {
-        // Process exists but port not ready - kill and restart
-        console.log('[cron] Gateway process exists but port not ready, restarting...');
-        try {
-          await gatewayProcess.kill();
-          await ensureMoltbotGateway(sandbox, env);
-          console.log('[cron] Gateway restarted successfully');
-          justStarted = true;
-        } catch (restartErr) {
-          console.error('[cron] Gateway restart failed:', restartErr);
-          return;
-        }
-      }
-    } else {
-      console.log('[cron] Gateway not running, attempting to start...');
-      try {
-        await ensureMoltbotGateway(sandbox, env);
-        console.log('[cron] Gateway started successfully');
-        justStarted = true;
-      } catch (startError) {
-        console.error('[cron] Failed to start gateway:', startError);
+      // If no gateway process exists, skip all cron work
+      if (!probeResult) {
+        console.log('[cron] Gateway not running, skipping sync');
         return;
       }
-    }
 
-    // Skip exec-dependent operations when gateway was just started
-    if (justStarted) {
-      console.log('[cron] Gateway just started, deferring sync/refresh to next cycle');
+      // Verify gateway is responsive on port
+      try {
+        await probeResult.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
+        console.log('[cron] Gateway is responsive, proceeding with sync');
+      } catch {
+        console.log('[cron] Gateway process exists but port not ready, skipping sync');
+        return;
+      }
+    } catch (e) {
+      console.log('[cron] Canary guard failed, skipping cron:', e instanceof Error ? e.message : e);
       return;
     }
 
@@ -530,22 +519,10 @@ async function scheduled(
         const exitCode = refreshResult.exitCode ?? 0;
         console.log('[cron] Token refresh result (exit=' + exitCode + '):', output || '(no output)');
 
-        // Exit code 2 = token written to file but config.apply failed
-        // Gateway must be restarted to pick up the new token from disk
+        // Exit code 2 = config.apply failed, but token is on disk
+        // Gateway will pick it up on next restart - no need to force restart
         if (exitCode === 2) {
-          console.log('[cron] config.apply failed, restarting gateway to load new token...');
-          try {
-            await sandbox.exec('rm -f /tmp/gcp-token-last-refresh', { timeout: 5000 });
-            const existingProc = await findExistingMoltbotProcess(sandbox);
-            if (existingProc) {
-              await existingProc.kill();
-              await new Promise((r) => setTimeout(r, 2000));
-            }
-            await ensureMoltbotGateway(sandbox, env);
-            console.log('[cron] Gateway restarted with fresh GCP token');
-          } catch (restartErr) {
-            console.error('[cron] Gateway restart after token refresh failed:', restartErr);
-          }
+          console.log('[cron] config.apply failed (exit 2), gateway will use token from disk on next start');
         }
       } catch (e) {
         console.error('[cron] Token refresh failed:', e);

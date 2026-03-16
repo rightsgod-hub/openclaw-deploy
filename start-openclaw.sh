@@ -113,12 +113,18 @@ if r2_configured; then
             if rclone copy "r2:${R2_BUCKET}/workspace/" "${RESTORE_TMP}/" $RCLONE_FLAGS \
                 --exclude='.venv/**' \
                 --exclude='.git/**'; then
+                # Check if any files were actually restored
+                FILE_COUNT=$(find "${RESTORE_TMP}" -type f 2>/dev/null | wc -l)
+                if [ "$FILE_COUNT" -eq 0 ]; then
+                    echo "WARNING: rclone copy succeeded but 0 files restored (R2 empty?), skipping retries"
+                    break
+                fi
                 if [ -f "${RESTORE_TMP}/IDENTITY.md" ]; then
-                    echo "Restored workspace from R2 backup (attempt $RETRY)"
+                    echo "Restored workspace from R2 backup (attempt $RETRY, $FILE_COUNT files)"
                     RESTORE_SUCCESS=1
                     break
                 else
-                    echo "WARNING: Restore completed but IDENTITY.md missing (attempt $RETRY)"
+                    echo "WARNING: Restore got $FILE_COUNT files but IDENTITY.md missing (attempt $RETRY)"
                 fi
             else
                 echo "WARNING: Workspace restore attempt $RETRY failed"

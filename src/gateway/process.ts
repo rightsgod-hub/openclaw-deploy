@@ -36,6 +36,17 @@ export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Proc
       }
     }
   } catch (e) {
+    // Re-throw DO infrastructure errors - these indicate the sandbox is unhealthy
+    // and callers should not attempt to start new processes
+    const msg = e instanceof Error ? e.message : String(e);
+    if (
+      msg.includes('internal error') ||
+      msg.includes('The Durable Object') ||
+      msg.includes('sandbox') ||
+      msg.includes('Network connection lost')
+    ) {
+      throw e;
+    }
     console.log('Could not list processes:', e);
   }
   return null;
@@ -54,11 +65,8 @@ export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Proc
  * @returns The running gateway process
  */
 export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): Promise<Process> {
-  // Configure rclone for R2 persistence (non-blocking if not configured).
-  // The startup script uses rclone to restore data from R2 on boot.
-  await ensureRcloneConfig(sandbox, env);
-
-  // Check if gateway is already running or starting
+  // Fast path: if gateway is already running and reachable, return immediately
+  // without any sandbox.exec calls (ensureRcloneConfig) to minimize DO load
   const existingProcess = await findExistingMoltbotProcess(sandbox);
   if (existingProcess) {
     console.log(
@@ -68,18 +76,14 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
       existingProcess.status,
     );
 
-    // Always use full startup timeout - a process can be "running" but not ready yet
-    // (e.g., just started by another concurrent request). Using a shorter timeout
-    // causes race conditions where we kill processes that are still initializing.
     try {
-      console.log('Waiting for gateway on port', MOLTBOT_PORT, 'timeout:', STARTUP_TIMEOUT_MS);
-      await existingProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: STARTUP_TIMEOUT_MS });
-      console.log('Gateway is reachable');
+      console.log('Checking gateway reachability on port', MOLTBOT_PORT);
+      await existingProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
+      console.log('Gateway is reachable (fast path)');
       return existingProcess;
-      // eslint-disable-next-line no-unused-vars
     } catch (_e) {
-      // Timeout waiting for port - process is likely dead or stuck, kill and restart
-      console.log('Existing process not reachable after full timeout, killing and restarting...');
+      // Port not reachable - fall through to full startup path
+      console.log('Existing process not reachable, proceeding with full startup...');
       try {
         await existingProcess.kill();
       } catch (killError) {
@@ -87,6 +91,11 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
       }
     }
   }
+
+  // Full startup path: configure rclone and start new process
+  // Configure rclone for R2 persistence (non-blocking if not configured).
+  // The startup script uses rclone to restore data from R2 on boot.
+  await ensureRcloneConfig(sandbox, env);
 
   // Start a new OpenClaw gateway
   console.log('Starting new OpenClaw gateway...');
