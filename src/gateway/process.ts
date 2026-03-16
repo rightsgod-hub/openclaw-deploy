@@ -76,14 +76,18 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
       existingProcess.status,
     );
 
+    // Use short timeout for running processes (should already be reachable),
+    // full timeout for starting processes (still booting up from cold start)
+    const isStarting = existingProcess.status === 'starting';
+    const waitTimeout = isStarting ? STARTUP_TIMEOUT_MS : 5000;
+    console.log('Waiting for gateway on port', MOLTBOT_PORT, 'timeout:', waitTimeout, isStarting ? '(starting)' : '(fast path)');
+
     try {
-      console.log('Checking gateway reachability on port', MOLTBOT_PORT);
-      await existingProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
-      console.log('Gateway is reachable (fast path)');
+      await existingProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: waitTimeout });
+      console.log('Gateway is reachable', isStarting ? '(waited for startup)' : '(fast path)');
       return existingProcess;
     } catch (_e) {
-      // Port not reachable - fall through to full startup path
-      console.log('Existing process not reachable, proceeding with full startup...');
+      console.log('Existing process not reachable after', waitTimeout, 'ms, killing and restarting...');
       try {
         await existingProcess.kill();
       } catch (killError) {
