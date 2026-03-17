@@ -4,6 +4,11 @@ import { MOLTBOT_PORT, STARTUP_TIMEOUT_MS } from '../config';
 import { buildEnvVars } from './env';
 import { ensureRcloneConfig } from './r2';
 
+// Singleton promise to prevent concurrent gateway startups.
+// When ensureMoltbotGateway is called while another call is in-flight,
+// the second call returns the same promise instead of starting a new process.
+let ensureInFlight: Promise<Process> | null = null;
+
 /**
  * Find an existing OpenClaw gateway process
  *
@@ -12,6 +17,16 @@ import { ensureRcloneConfig } from './r2';
  */
 export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Process | null> {
   try {
+    // Clean up dead process records (killed/failed/completed/error) from the list
+    try {
+      const cleaned = await sandbox.cleanupCompletedProcesses();
+      if (cleaned > 0) {
+        console.log(`[Gateway] Cleaned up ${cleaned} completed process records`);
+      }
+    } catch (e) {
+      console.error('[Gateway] Failed to cleanup completed processes:', e);
+    }
+
     const processes = await sandbox.listProcesses();
     for (const proc of processes) {
       // Match gateway process (openclaw gateway or legacy clawdbot gateway)
@@ -60,11 +75,26 @@ export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Proc
  * 2. Check for an existing gateway process
  * 3. Wait for it to be ready, or start a new one
  *
+ * Concurrent calls are deduplicated via a singleton promise:
+ * if a startup is already in-flight, subsequent callers receive
+ * the same promise instead of starting a new process.
+ *
  * @param sandbox - The sandbox instance
  * @param env - Worker environment bindings
  * @returns The running gateway process
  */
 export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): Promise<Process> {
+  if (ensureInFlight) {
+    console.log('[Gateway] Concurrent call detected, reusing in-flight startup promise');
+    return ensureInFlight;
+  }
+  ensureInFlight = ensureMoltbotGatewayImpl(sandbox, env).finally(() => {
+    ensureInFlight = null;
+  });
+  return ensureInFlight;
+}
+
+async function ensureMoltbotGatewayImpl(sandbox: Sandbox, env: MoltbotEnv): Promise<Process> {
   // Fast path: if gateway is already running and reachable, return immediately
   // without any sandbox.exec calls (ensureRcloneConfig) to minimize DO load
   const existingProcess = await findExistingMoltbotProcess(sandbox);
@@ -118,6 +148,41 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
   } catch (startErr) {
     console.error('Failed to start process:', startErr);
     throw startErr;
+  }
+
+  // Kill duplicate gateway processes that may have been started by concurrent requests
+  try {
+    const allProcesses = await sandbox.listProcesses();
+    for (const proc of allProcesses) {
+      if (proc.id === process.id) continue;
+
+      const isGatewayProcess =
+        proc.command.includes('start-openclaw.sh') ||
+        proc.command.includes('openclaw gateway') ||
+        proc.command.includes('start-moltbot.sh') ||
+        proc.command.includes('clawdbot gateway');
+      const isCliCommand =
+        proc.command.includes('openclaw devices') ||
+        proc.command.includes('openclaw --version') ||
+        proc.command.includes('openclaw onboard') ||
+        proc.command.includes('clawdbot devices') ||
+        proc.command.includes('clawdbot --version');
+
+      if (isGatewayProcess && !isCliCommand) {
+        if (proc.status === 'starting' || proc.status === 'running') {
+          try {
+            await proc.kill();
+            console.log('Killed duplicate gateway process:', proc.id);
+          } catch (_killErr) {
+            // Process may have already exited
+            console.log('Failed to kill duplicate process (may have already exited):', proc.id);
+          }
+        }
+      }
+    }
+  } catch (listErr) {
+    // Non-fatal: if we can't list processes, proceed with startup
+    console.log('Could not list processes for duplicate cleanup:', listErr);
   }
 
   // Wait for the gateway to be ready

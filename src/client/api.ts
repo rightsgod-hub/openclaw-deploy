@@ -194,15 +194,27 @@ export interface DestroyContainerResponse {
 
 export async function destroyContainer(skipSync = false): Promise<DestroyContainerResponse> {
   const query = skipSync ? '?skipSync=true' : '';
-  const response = await fetch(`${API_BASE}/gateway/destroy${query}`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-  });
-  if (response.status === 401) {
-    throw new AuthError('Unauthorized');
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 180000);
+  try {
+    const response = await fetch(`${API_BASE}/gateway/destroy${query}`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (response.status === 401) {
+      throw new AuthError('Unauthorized');
+    }
+    return response.json() as Promise<DestroyContainerResponse>;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('リクエストがタイムアウトしました（180秒）。コンテナ破壊処理に時間がかかっています。');
+    }
+    throw err;
   }
-  return response.json() as Promise<DestroyContainerResponse>;
 }
 
 export interface TokenRefreshResponse {

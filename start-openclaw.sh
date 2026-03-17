@@ -535,7 +535,7 @@ fi
 if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ]; then
     echo "Refreshing GCP access token before gateway start..."
     rm -f /tmp/gcp-token-last-refresh
-    bash /usr/local/bin/refresh-gcp-token.sh || true
+    timeout 30 bash /usr/local/bin/refresh-gcp-token.sh || true
     echo "Pre-start GCP token refresh completed"
 fi
 
