@@ -89,6 +89,7 @@ try {
     const applyConfig = Object.assign({}, config);
     delete applyConfig.discord;
     delete applyConfig.gateway;
+    delete applyConfig.plugins;
     process.stdout.write(JSON.stringify({ raw: JSON.stringify(applyConfig), baseHash: baseHash }));
 } catch(e) {
     process.stderr.write('Failed: ' + e.message + '\n');

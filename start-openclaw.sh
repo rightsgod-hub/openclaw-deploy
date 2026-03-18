@@ -10,10 +10,10 @@
 # set -e removed: single command failure must not kill the entire script
 # Each section handles its own errors with || true or fallback logic
 
-# [修正 2026-03-12] flock/ss による二重起動チェックを削除
-# CF Sandbox 内でロックファイルやポート残骸が残っていると
-# 新プロセスが即 exit 0 → ProcessExitedBeforeReadyError になるため除去。
-# コンテナの二重起動防止は Worker 側の keepAlive 管理に委ねる。
+if ss -tlnp 2>/dev/null | grep -q ":18789 "; then
+  echo "Port 18789 already in use, skipping duplicate startup"
+  exit 0
+fi
 
 CONFIG_DIR="/root/.openclaw"
 CONFIG_FILE="$CONFIG_DIR/openclaw.json"
@@ -258,6 +258,8 @@ config.channels = config.channels || {};
 config.gateway.port = 18789;
 config.gateway.mode = 'local';
 config.gateway.trustedProxies = ['10.1.0.0'];
+if (!config.gateway.reload) config.gateway.reload = {};
+config.gateway.reload.mode = 'hot';
 
 if (process.env.OPENCLAW_GATEWAY_TOKEN) {
     config.gateway.auth = config.gateway.auth || {};
@@ -469,8 +471,9 @@ console.log('[patch] chatCompletions endpoint enabled');
 if (!config.agents) config.agents = {};
 if (!config.agents.defaults) config.agents.defaults = {};
 if (!config.agents.defaults.model) config.agents.defaults.model = {};
-config.agents.defaults.model.primary = 'moonshot/kimi-k2.5';
-console.log('[patch] primary model: moonshot/kimi-k2.5');
+config.agents.defaults.model.primary = 'cf-ai-gw-google-0/gemini-3-flash-preview';
+config.agents.defaults.model.fallbacks = ['moonshot/kimi-k2.5', 'moonshot/kimi-k2-turbo-preview'];
+console.log('[patch] primary model: cf-ai-gw-google-0/gemini-3-flash-preview, fallbacks: moonshot/kimi-k2.5');
 if (!config.agents.defaults.workspace) {
     config.agents.defaults.workspace = '/root/clawd';
 }

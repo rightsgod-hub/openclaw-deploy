@@ -464,6 +464,7 @@ adminApi.get('/token-status', async (c) => {
 adminApi.get('/processes', async (c) => {
   const sandbox = c.get('sandbox');
   try {
+    try { await sandbox.cleanupCompletedProcesses(); } catch { /* non-fatal */ }
     const processes = await sandbox.listProcesses();
     const processInfo = processes.map((proc) => ({
       id: proc.id,

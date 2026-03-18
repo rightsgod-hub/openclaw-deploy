@@ -500,8 +500,15 @@ async function scheduled(
         await probeResult.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
         console.log('[cron] Gateway is responsive, proceeding with sync');
       } catch {
-        console.log('[cron] Gateway process exists but port not ready, skipping sync');
-        return;
+        console.log('[cron] Gateway process exists but port not ready, attempting recovery');
+        try { await probeResult.kill(); } catch { /* non-fatal */ }
+        try {
+          await ensureMoltbotGateway(sandbox, env);
+          console.log('[cron] Gateway recovered successfully');
+        } catch (e) {
+          console.error('[cron] Gateway recovery failed:', e);
+        }
+        return; // sync skip（起動直後なのでsyncは次回）
       }
     } catch (e) {
       console.log('[cron] Canary guard failed, skipping cron:', e instanceof Error ? e.message : e);

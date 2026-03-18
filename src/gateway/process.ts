@@ -109,7 +109,7 @@ async function ensureMoltbotGatewayImpl(sandbox: Sandbox, env: MoltbotEnv): Prom
     console.log(`[Gateway] Waiting for port ${MOLTBOT_PORT} (status: ${existingProcess.status})`);
 
     try {
-      await existingProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp' });
+      await existingProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
       console.log('[Gateway] Gateway is reachable');
       return existingProcess;
     } catch (_e) {
