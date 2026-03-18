@@ -10,11 +10,6 @@
 # set -e removed: single command failure must not kill the entire script
 # Each section handles its own errors with || true or fallback logic
 
-if ss -tlnp 2>/dev/null | grep -q ":18789 "; then
-  echo "Port 18789 already in use, skipping duplicate startup"
-  exit 0
-fi
-
 CONFIG_DIR="/root/.openclaw"
 CONFIG_FILE="$CONFIG_DIR/openclaw.json"
 WORKSPACE_DIR="/root/clawd"
