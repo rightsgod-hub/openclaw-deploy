@@ -290,9 +290,9 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
     let baseUrl;
     let effectiveModelId = modelId;
     if (accountId && gatewayId) {
-        if (gwProvider === 'google-vertex-ai') {
+        if (gwProvider === 'google-ai-studio') {
             baseUrl = 'https://gateway.ai.cloudflare.com/v1/' + accountId + '/' + gatewayId + '/compat';
-            effectiveModelId = 'google-vertex-ai/google/' + modelId;
+            effectiveModelId = 'google-ai-studio/' + modelId;
         } else {
             baseUrl = 'https://gateway.ai.cloudflare.com/v1/' + accountId + '/' + gatewayId + '/' + gwProvider;
             if (gwProvider === 'workers-ai') baseUrl += '/v1';
@@ -302,6 +302,8 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
     }
 
     if (baseUrl && apiKey) {
+        let effectiveApiKey = apiKey;
+
         const api = gwProvider === 'anthropic' ? 'anthropic-messages' : 'openai-completions';
         const providerName = 'cf-ai-gw-' + gwProvider;
 
@@ -309,12 +311,13 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
         config.models.providers = config.models.providers || {};
         const providerConfig = {
             baseUrl: baseUrl,
-            apiKey: apiKey,
+            apiKey: effectiveApiKey,
             api: api,
             models: [{ id: effectiveModelId, name: effectiveModelId, contextWindow: 131072, maxTokens: 8192 }],
         };
-        if (gwProvider === 'google-vertex-ai') {
-            providerConfig.headers = { 'cf-aig-authorization': 'Bearer ' + apiKey };
+        if (gwProvider === 'google-ai-studio') {
+            providerConfig.models[0].reasoning = true;
+            providerConfig.models[0].input = ['text', 'image'];
         }
         config.models.providers[providerName] = providerConfig;
         config.agents = config.agents || {};
@@ -467,7 +470,7 @@ if (!config.agents) config.agents = {};
 if (!config.agents.defaults) config.agents.defaults = {};
 if (!config.agents.defaults.model) config.agents.defaults.model = {};
 if (!process.env.CF_AI_GATEWAY_MODEL) {
-    config.agents.defaults.model.primary = 'cf-ai-gw-google-0/gemini-3-flash-preview';
+    config.agents.defaults.model.primary = 'cf-ai-gw-google-ai-studio/gemini-3-flash-preview';
 }
 config.agents.defaults.model.fallbacks = ['moonshot/kimi-k2.5', 'moonshot/kimi-k2-turbo-preview'];
 console.log('[patch] primary model: ' + config.agents.defaults.model.primary + ', fallbacks: moonshot/kimi-k2.5');
