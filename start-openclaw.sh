@@ -183,8 +183,8 @@ if [ -n "$GCP_SERVICE_ACCOUNT_KEY" ]; then
     echo "$GCP_SERVICE_ACCOUNT_KEY" > "$GCP_KEY_FILE"
     chmod 600 "$GCP_KEY_FILE"
     export GOOGLE_APPLICATION_CREDENTIALS="$GCP_KEY_FILE"
-    export GOOGLE_CLOUD_PROJECT="scrap-database-449306"
-    export GOOGLE_CLOUD_LOCATION="global"
+    export GOOGLE_CLOUD_PROJECT="${GCP_PROJECT_ID:-}"
+    export GOOGLE_CLOUD_LOCATION="${GCP_LOCATION:-global}"
     echo "GCP service account key written to $GCP_KEY_FILE"
 fi
 
@@ -253,9 +253,6 @@ config.channels = config.channels || {};
 config.gateway.port = 18789;
 config.gateway.mode = 'local';
 config.gateway.trustedProxies = ['10.1.0.0'];
-if (!config.gateway.reload) config.gateway.reload = {};
-config.gateway.reload.mode = 'hot';
-
 if (process.env.OPENCLAW_GATEWAY_TOKEN) {
     config.gateway.auth = config.gateway.auth || {};
     config.gateway.auth.token = process.env.OPENCLAW_GATEWAY_TOKEN;
@@ -291,9 +288,15 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
     const apiKey = process.env.CLOUDFLARE_AI_GATEWAY_API_KEY;
 
     let baseUrl;
+    let effectiveModelId = modelId;
     if (accountId && gatewayId) {
-        baseUrl = 'https://gateway.ai.cloudflare.com/v1/' + accountId + '/' + gatewayId + '/' + gwProvider;
-        if (gwProvider === 'workers-ai') baseUrl += '/v1';
+        if (gwProvider === 'google-vertex-ai') {
+            baseUrl = 'https://gateway.ai.cloudflare.com/v1/' + accountId + '/' + gatewayId + '/compat';
+            effectiveModelId = 'google-vertex-ai/google/' + modelId;
+        } else {
+            baseUrl = 'https://gateway.ai.cloudflare.com/v1/' + accountId + '/' + gatewayId + '/' + gwProvider;
+            if (gwProvider === 'workers-ai') baseUrl += '/v1';
+        }
     } else if (gwProvider === 'workers-ai' && process.env.CF_ACCOUNT_ID) {
         baseUrl = 'https://api.cloudflare.com/client/v4/accounts/' + process.env.CF_ACCOUNT_ID + '/ai/v1';
     }
@@ -304,16 +307,20 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
 
         config.models = config.models || {};
         config.models.providers = config.models.providers || {};
-        config.models.providers[providerName] = {
+        const providerConfig = {
             baseUrl: baseUrl,
             apiKey: apiKey,
             api: api,
-            models: [{ id: modelId, name: modelId, contextWindow: 131072, maxTokens: 8192 }],
+            models: [{ id: effectiveModelId, name: effectiveModelId, contextWindow: 131072, maxTokens: 8192 }],
         };
+        if (gwProvider === 'google-vertex-ai') {
+            providerConfig.headers = { 'cf-aig-authorization': 'Bearer ' + apiKey };
+        }
+        config.models.providers[providerName] = providerConfig;
         config.agents = config.agents || {};
         config.agents.defaults = config.agents.defaults || {};
-        config.agents.defaults.model = { primary: providerName + '/' + modelId };
-        console.log('AI Gateway model override: provider=' + providerName + ' model=' + modelId + ' via ' + baseUrl);
+        config.agents.defaults.model = { primary: providerName + '/' + effectiveModelId };
+        console.log('AI Gateway model override: provider=' + providerName + ' model=' + effectiveModelId + ' via ' + baseUrl);
     } else {
         console.warn('CF_AI_GATEWAY_MODEL set but missing required config (account ID, gateway ID, or API key)');
     }
@@ -388,9 +395,6 @@ if (process.env.DISCORD_BOT_TOKEN) {
                 requireMention: false,
             },
         },
-        eventQueue: {
-            listenerTimeout: 300000,
-        },
         accounts: {},
     };
     if (process.env.DISCORD_DM_ALLOW_FROM) {
@@ -416,10 +420,6 @@ if (config.channels.discord && config.channels.discord.enabled) {
     config.plugins.entries = config.plugins.entries || {};
     config.plugins.entries.discord = { enabled: true };
 }
-
-// Fork: Messages settings
-config.messages = config.messages || {};
-config.messages.ackReactionScope = "group-mentions";
 
 // Fork: Tools settings
 config.tools = config.tools || {};
@@ -466,16 +466,21 @@ console.log('[patch] chatCompletions endpoint enabled');
 if (!config.agents) config.agents = {};
 if (!config.agents.defaults) config.agents.defaults = {};
 if (!config.agents.defaults.model) config.agents.defaults.model = {};
-config.agents.defaults.model.primary = 'cf-ai-gw-google-0/gemini-3-flash-preview';
+if (!process.env.CF_AI_GATEWAY_MODEL) {
+    config.agents.defaults.model.primary = 'cf-ai-gw-google-0/gemini-3-flash-preview';
+}
 config.agents.defaults.model.fallbacks = ['moonshot/kimi-k2.5', 'moonshot/kimi-k2-turbo-preview'];
-console.log('[patch] primary model: cf-ai-gw-google-0/gemini-3-flash-preview, fallbacks: moonshot/kimi-k2.5');
+console.log('[patch] primary model: ' + config.agents.defaults.model.primary + ', fallbacks: moonshot/kimi-k2.5');
 if (!config.agents.defaults.workspace) {
     config.agents.defaults.workspace = '/root/clawd';
 }
 config.agents.defaults.timeoutSeconds = 300;
 if (!config.agents.defaults.models) config.agents.defaults.models = {};
 config.agents.defaults.models['moonshot/kimi-k2.5'] = { alias: 'Kimi K2.5' };
-config.agents.defaults.models['cf-ai-gw-google-0/gemini-3-flash-preview'] = { alias: 'Gemini Flash' };
+const primaryModel = config.agents.defaults.model.primary;
+if (primaryModel && !config.agents.defaults.models[primaryModel]) {
+    config.agents.defaults.models[primaryModel] = { alias: 'Gemini Flash' };
+}
 config.agents.defaults.models['moonshot/kimi-k2-turbo-preview'] = { alias: 'Kimi K2 Turbo' };
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));

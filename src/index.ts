@@ -500,40 +500,13 @@ async function scheduled(
         await probeResult.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 5000 });
         console.log('[cron] Gateway is responsive, proceeding with sync');
       } catch {
-        console.log('[cron] Gateway process exists but port not ready, attempting recovery');
+        console.log('[cron] Gateway process exists but port not ready, killing and skipping');
         try { await probeResult.kill(); } catch { /* non-fatal */ }
-        try {
-          await ensureMoltbotGateway(sandbox, env);
-          console.log('[cron] Gateway recovered successfully');
-        } catch (e) {
-          console.error('[cron] Gateway recovery failed:', e);
-        }
-        return; // sync skip（起動直後なのでsyncは次回）
+        return;
       }
     } catch (e) {
       console.log('[cron] Canary guard failed, skipping cron:', e instanceof Error ? e.message : e);
       return;
-    }
-
-    // Refresh GCP access token if configured
-    if (env.GCP_SERVICE_ACCOUNT_KEY) {
-      try {
-        console.log('[cron] Refreshing GCP access token...');
-        const gatewayToken = env.MOLTBOT_GATEWAY_TOKEN || '';
-        const refreshCmd = `OPENCLAW_GATEWAY_TOKEN="${gatewayToken}" bash /usr/local/bin/refresh-gcp-token.sh`;
-        const refreshResult = await sandbox.exec(refreshCmd, { timeout: 20000 });
-        const output = refreshResult.stdout?.trim() || '';
-        const exitCode = refreshResult.exitCode ?? 0;
-        console.log('[cron] Token refresh result (exit=' + exitCode + '):', output || '(no output)');
-
-        // Exit code 2 = config.apply failed, but token is on disk
-        // Gateway will pick it up on next restart - no need to force restart
-        if (exitCode === 2) {
-          console.log('[cron] config.apply failed (exit 2), gateway will use token from disk on next start');
-        }
-      } catch (e) {
-        console.error('[cron] Token refresh failed:', e);
-      }
     }
 
     console.log('[cron] Starting backup sync to R2...');
